@@ -1,0 +1,1473 @@
+THE WORLD HAS ROTTEN
+ULTIMATE MULTIPLAYER DEVELOPMENT MASTER SPECIFICATION
+30,000-WORD DEVELOPMENT SERIES
+PART 1 OF 10: COMPLETE MULTIPLAYER VISION, CORE ARCHITECTURE, NETWORK FOUNDATION AND COOPERATIVE DESIGN
+SECTION 1 — PROJECT PURPOSE AND DEVELOPMENT VISION
+1.1 The multiplayer project
+Develop a complete, functional online multiplayer experience for THE WORLD HAS ROTTEN.
+
+THE WORLD HAS ROTTEN is a futuristic science-fiction survival horror game set around 3059–3062 AD. The world has been devastated by meteor impacts carrying alien organisms known as THEY. These organisms have invaded the planet and corrupted its advanced technology.
+
+THEY infect metals and rare-earth elements only. They do not infect humans, animals, trees, grass, vines or other plants. Infected machinery, weapons, electronics, military equipment and mechs can transform into terrifying biomechanical structures combining steel, mechanical skeletons, exposed organic tissue, tendons, muscles and parasite growths.
+
+THEY have also gained control of humanity's satellite network. They use the satellites to transmit a powerful signal through space, summoning their forces to conquer Earth.
+
+Humanity has advanced technology, weapons, military equipment and mechs, but the invasion has caused widespread destruction. Players must explore abandoned locations, restore power, investigate the invasion, survive hostile creatures, uncover the truth and eventually attempt to stop the signal.
+
+The multiplayer mode must allow players to experience this world together.
+
+It must not feel like a separate, simplified game. It must preserve the atmosphere, story, monsters, environments, gameplay systems, graphics direction and survival horror identity of the original project.
+
+The multiplayer experience must be built around cooperation, tension, exploration, communication, shared danger and meaningful teamwork.
+
+1.2 Primary development goal
+Create a multiplayer system that allows players to:
+
+Create online sessions.
+
+Invite friends.
+
+Join private games.
+
+Find public games where supported.
+
+Play the campaign cooperatively.
+
+Explore the same world.
+
+Fight the same monsters.
+
+Share mission objectives.
+
+Activate generators together.
+
+Complete puzzles.
+
+Collect resources.
+
+Help injured teammates.
+
+Fight bosses cooperatively.
+
+Experience synchronised cinematics.
+
+Progress through the campaign.
+
+Play a separate survival mode.
+
+Communicate through supported voice or text systems.
+
+Save progress reliably.
+
+Reconnect after connection interruptions where supported.
+
+The system must be genuinely multiplayer. Displaying another player's character model in the world is not sufficient.
+
+Every major multiplayer feature must work through real network communication and shared game-state management.
+
+1.3 Recommended player count
+Build the initial multiplayer architecture around two-player cooperative gameplay.
+
+After two-player functionality is stable, expand the system to four players.
+
+The main cooperative campaign should target two to four players.
+
+Do not begin by attempting to implement a very large lobby with eight, sixteen or more players. Larger sessions introduce additional networking, AI, performance, synchronisation and testing challenges.
+
+Only introduce larger player counts if the engine, server infrastructure and actual game design can support them.
+
+The player count must be configurable rather than scattered as hardcoded values throughout the project.
+
+Create a central multiplayer configuration containing:
+
+Minimum players.
+
+Maximum players.
+
+Maximum lobby size.
+
+Maximum active players per mission.
+
+Session timeout.
+
+Reconnection window.
+
+Network update settings.
+
+Matchmaking limits.
+
+Supported game modes.
+
+All limits must be validated by the authoritative session system.
+
+SECTION 2 — MULTIPLAYER GAME MODES
+2.1 Cooperative campaign
+The main multiplayer experience must be a cooperative version of the established ten-stage campaign.
+
+The stages are:
+
+The Fallen City.
+
+The Silent Estates.
+
+The Dead Mall.
+
+The Dead Construction Zone.
+
+The Underground.
+
+The Forgotten Laboratory.
+
+The Iron Graveyard.
+
+Ground Zero.
+
+The Titanforged.
+
+The Final Signal.
+
+Players must be able to complete the campaign together.
+
+The campaign must preserve its existing story progression. Multiplayer must not create contradictory events or allow different players in the same session to see incompatible versions of the story.
+
+Every player should participate in the important events, including:
+
+Discovering clues.
+
+Finding important equipment.
+
+Activating generators.
+
+Opening locked routes.
+
+Discovering secret areas.
+
+Encountering new monsters.
+
+Surviving major attacks.
+
+Completing mission objectives.
+
+Fighting bosses.
+
+Watching stage-ending cinematics.
+
+Discovering the next stage.
+
+Some exploration can be optional. However, critical progression must be controlled by the shared mission system.
+
+For example, if the team must activate three generators, the mission must recognise the team's combined progress. It must not require every player to activate all three generators independently.
+
+2.2 Cooperative survival mode
+Create a separate survival mode for players who want to survive repeated monster encounters.
+
+The mode should use locations and environments from the established game where appropriate.
+
+Possible locations include:
+
+Abandoned city streets.
+
+Destroyed shopping centres.
+
+Residential districts.
+
+Construction zones.
+
+Underground tunnels.
+
+Research facilities.
+
+Military installations.
+
+Meteor impact zones.
+
+Players must work together to survive increasingly difficult encounters.
+
+Survival mode may include:
+
+Enemy waves.
+
+Limited ammunition.
+
+Resource collection.
+
+Optional objectives.
+
+Generator restoration.
+
+Defendable locations.
+
+Environmental hazards.
+
+Elite monsters.
+
+Boss encounters.
+
+Team survival scoring.
+
+Each wave should have a defined difficulty profile. Avoid creating difficulty by simply multiplying enemy health without improving the encounter design.
+
+Use different monster combinations and attack patterns to create variety.
+
+For example, a wave might combine a fast hunter with a slower heavy attacker. The fast creature can pressure isolated players while the heavy creature controls the team's escape route.
+
+Survival mode must remain fair. Players should receive understandable warnings before major threats appear.
+
+2.3 Private multiplayer sessions
+Players must be able to create private sessions for friends.
+
+The private lobby should provide:
+
+Create session.
+
+Invite friends.
+
+Accept invitations.
+
+Join session.
+
+Leave session.
+
+Display connected players.
+
+Display player readiness.
+
+Display connection status.
+
+Select game mode.
+
+Select available campaign stage.
+
+Select difficulty.
+
+Start the game.
+
+Return to the lobby.
+
+The host or authorised session leader may control protected settings.
+
+A normal player must not be able to change the selected stage or start the mission without the required permissions.
+
+If the host leaves, the system must follow a defined host-leaving policy. If host migration is supported, transfer session authority safely. If it is not supported, clearly notify players and close or preserve the session according to the chosen architecture.
+
+Do not silently transfer authority to an arbitrary player without validating the new session state.
+
+2.4 Public matchmaking
+Implement public matchmaking if the chosen platform and online infrastructure support it.
+
+Players should be able to search for sessions based on:
+
+Game mode.
+
+Campaign stage.
+
+Difficulty.
+
+Region.
+
+Available player slots.
+
+Connection quality.
+
+Relevant progression requirements.
+
+Matchmaking should avoid placing players into incompatible campaign states.
+
+For example, a player who has not unlocked a particular stage should not automatically be placed into a session that would corrupt their campaign progression.
+
+If a player joins a later-stage session through an allowed feature, record the distinction between the session's progress and the player's permanent campaign unlocks.
+
+Matchmaking must have clear states:
+
+Searching.
+
+Finding a suitable session.
+
+Connecting.
+
+Joining.
+
+Waiting for the session to begin.
+
+Failed or cancelled.
+
+Provide meaningful error messages for connection failures, full lobbies, incompatible versions and unavailable services.
+
+Do not leave players staring at an endless loading screen.
+
+SECTION 3 — MULTIPLAYER SYSTEM ARCHITECTURE
+3.1 Architectural requirements
+Before implementing multiplayer gameplay, inspect the existing project.
+
+Identify:
+
+The game engine.
+
+The current player controller.
+
+The existing character and monster systems.
+
+The physics engine.
+
+The existing AI architecture.
+
+The inventory system.
+
+The objective system.
+
+The generator system.
+
+The save system.
+
+The audio system.
+
+The cinematic system.
+
+The current level-loading system.
+
+Available networking features.
+
+Available platform services.
+
+Do not replace working systems without a technical reason.
+
+Prefer extending the existing project architecture rather than creating duplicate systems that conflict with it.
+
+Document which systems already exist, which need modification and which need to be built from scratch.
+
+3.2 Network authority
+Use an authoritative networking model appropriate to the selected engine and deployment environment.
+
+A dedicated authoritative server is suitable if the project can support it. A host-authoritative cooperative model may be acceptable for an initial prototype.
+
+Regardless of the chosen architecture, define exactly which machine or service is responsible for each important game decision.
+
+Authoritative systems should manage:
+
+Session state.
+
+Mission progression.
+
+Generator completion.
+
+Player damage.
+
+Monster damage.
+
+Boss health.
+
+Monster deaths.
+
+Important item collection.
+
+Inventory validation.
+
+Objective completion.
+
+Player revival.
+
+Campaign saves.
+
+Clients may predict or display immediate feedback, but important outcomes must be validated.
+
+For example, when a player shoots a monster, the local client may immediately show a muzzle flash and play the firing sound. The authoritative system must still validate the shot and determine the actual damage outcome.
+
+Do not allow clients to arbitrarily announce that a boss has been defeated.
+
+3.3 Separate networking responsibilities
+Organise the multiplayer code into clear systems.
+
+Recommended logical modules:
+
+Session Manager
+
+Creates, joins, updates and closes multiplayer sessions.
+
+Lobby Manager
+
+Controls lobby membership, readiness, game settings and invitations.
+
+Player Network Manager
+
+Tracks player connections, network identities, movement and state.
+
+Game State Manager
+
+Maintains the authoritative shared state of the current match.
+
+Mission Manager
+
+Tracks objectives, mission events and stage completion.
+
+Monster Network Manager
+
+Synchronises monster states and authoritative AI decisions.
+
+Combat Manager
+
+Validates weapons, damage, attacks, hits and deaths.
+
+Inventory Manager
+
+Manages player inventory and any shared resources.
+
+Generator Manager
+
+Controls generator interaction and shared puzzle progress.
+
+Cinematic Manager
+
+Coordinates shared cutscenes and story transitions.
+
+Save Manager
+
+Stores campaign progress and restores valid session state.
+
+Communication Manager
+
+Manages supported voice, text and player communication features.
+
+These modules should communicate through documented interfaces rather than depending on uncontrolled direct references to one another.
+
+3.4 Network identities
+Every connected player must have a unique network identity within the session.
+
+Do not use a character's display name as the only identifier.
+
+Track:
+
+Network player ID.
+
+Platform identity where available.
+
+Session identity.
+
+Display name.
+
+Connection status.
+
+Selected character.
+
+Player readiness.
+
+Current health.
+
+Current state.
+
+Last confirmed session activity.
+
+Validate identity whenever a client requests an important action.
+
+Prevent duplicate player instances when reconnecting.
+
+A reconnecting player should recover their existing session identity when the architecture permits it, rather than being treated as an entirely new player with a duplicate character.
+
+3.5 Network messages and events
+Create a clear event system for important multiplayer actions.
+
+Examples include:
+
+PlayerJoined.
+
+PlayerLeft.
+
+PlayerReadyChanged.
+
+MissionStarted.
+
+ObjectiveUpdated.
+
+GeneratorProgressChanged.
+
+GeneratorActivated.
+
+MonsterDetectedPlayer.
+
+MonsterAttackStarted.
+
+PlayerDamaged.
+
+PlayerDowned.
+
+PlayerRevived.
+
+BossPhaseChanged.
+
+BossDefeated.
+
+CutsceneStarted.
+
+CutsceneCompleted.
+
+StageCompleted.
+
+CampaignProgressSaved.
+
+Each event must have a defined purpose and validated data.
+
+Avoid sending unnecessary data every frame.
+
+Use reliable delivery for critical state changes where required. Use appropriate higher-frequency updates for movement and other continuously changing data.
+
+Do not assume that every network message arrives immediately or in the order expected.
+
+The system must handle delayed, repeated or missing messages safely.
+
+SECTION 4 — PLAYER MOVEMENT AND SYNCHRONISATION
+4.1 Movement requirements
+All players must see one another moving naturally.
+
+Synchronise the relevant movement states:
+
+Idle.
+
+Walking.
+
+Running.
+
+Sprinting.
+
+Jumping.
+
+Falling.
+
+Landing.
+
+Crouching.
+
+Climbing where supported.
+
+Interacting.
+
+Aiming.
+
+Shooting.
+
+Reloading.
+
+Melee attacks.
+
+Taking damage.
+
+Downed state.
+
+Reviving.
+
+Death.
+
+The remote character must display the correct animation for the action being performed.
+
+Avoid situations where one player sees another player running while the other appears to slide across the ground.
+
+4.2 Smooth movement
+Use suitable network interpolation and prediction.
+
+Remote player movement should be smoothed using received position and rotation updates.
+
+Avoid directly snapping the remote character to every received network position.
+
+For locally controlled players, use prediction where appropriate and reconcile authoritative updates without creating noticeable movement jumps.
+
+Do not allow movement prediction to override important collision or gameplay restrictions.
+
+When network conditions worsen, the system should degrade gracefully.
+
+A slightly delayed remote animation is preferable to a character repeatedly teleporting across the environment.
+
+4.3 Collision and physical consistency
+The multiplayer game must preserve the global collision integrity requirements of the project.
+
+Audit all ten stages and all multiplayer environments.
+
+Fix:
+
+Gaps between walls.
+
+Missing floor collision.
+
+Incorrect building collision.
+
+Unintended openings.
+
+Incorrect stairs.
+
+Floating collision surfaces.
+
+Overlapping collision meshes.
+
+Players passing through solid props.
+
+Monsters clipping through solid structures.
+
+Physics objects entering inaccessible geometry.
+
+Preserve intended routes, including doors, windows, corridors, stairs, vents and designed shortcuts.
+
+Do not solve every collision problem by adding invisible boxes that obstruct legitimate movement.
+
+Use collision meshes that accurately represent the intended physical structure.
+
+Test all multiplayer movement states, including walking, sprinting, crouching, jumping, falling and interacting with objects.
+
+4.4 Player separation and boundaries
+The team should be able to explore independently within the mission's intended boundaries.
+
+However, prevent players from travelling so far apart that mission logic, streaming or multiplayer synchronisation becomes unreliable.
+
+Use level boundaries and mission rules rather than arbitrary invisible walls wherever possible.
+
+If a player moves too far away from the team:
+
+Display an understandable warning.
+
+Show the direction of the team or mission area.
+
+Provide time to return.
+
+Apply a mission-specific boundary rule if necessary.
+
+Do not teleport a player without clear warning and a legitimate gameplay reason.
+
+SECTION 5 — COOPERATIVE GAMEPLAY AND TEAMWORK
+5.1 Teamwork philosophy
+The game should reward cooperation without making solo contribution impossible.
+
+Players should have opportunities to help one another through combat, exploration, resource management and objectives.
+
+Do not require every player to perform the same action at the same time unless the mission specifically calls for coordinated teamwork.
+
+Create situations where players can naturally support each other.
+
+Examples:
+
+One player distracts a monster while another activates a generator.
+
+One player watches a corridor while another searches a room.
+
+One player collects ammunition while another protects the team.
+
+Two players attack different weak points of a boss.
+
+One player revives a teammate while another keeps enemies away.
+
+Players coordinate when a storm reduces visibility.
+
+Teammates communicate when a monster loses sight of them and begins searching.
+
+5.2 Optional player roles
+Provide flexible play styles rather than mandatory character classes.
+
+Possible responsibilities include:
+
+Combat-focused player: prioritises fighting monsters and protecting teammates.
+
+Explorer: searches rooms, finds clues and identifies useful routes.
+
+Support player: assists injured teammates and helps manage resources.
+
+Scout: observes monster behaviour and identifies threats.
+
+Objective specialist: focuses on generators, machinery and mission interactions.
+
+These are suggestions for play styles, not restrictions.
+
+Any player should be able to contribute to the mission.
+
+If the project introduces character abilities, make sure no essential mission objective depends on one specific character unless that requirement is deliberately designed and explained.
+
+5.3 Shared objectives
+Create a central objective state.
+
+All players must receive consistent information about:
+
+Current main objective.
+
+Completed objectives.
+
+Remaining objectives.
+
+Optional objectives.
+
+Required equipment.
+
+Important locations.
+
+Mission progress.
+
+If one player completes an objective, the update must be reflected for everyone.
+
+Prevent duplicate completion rewards or duplicated mission triggers.
+
+If two players interact with the same objective simultaneously, the authoritative system must resolve the interaction safely.
+
+SECTION 6 — HEALTH, DAMAGE AND REVIVAL
+6.1 Shared multiplayer damage rules
+Player damage must be validated by the authoritative game system.
+
+Synchronise:
+
+Current health.
+
+Damage received.
+
+Damage source.
+
+Status effects.
+
+Healing.
+
+Downed state.
+
+Death.
+
+Revival.
+
+Respawn where permitted.
+
+Players must not receive different versions of the same damage event.
+
+Damage feedback should be responsive, but the final result must be authoritative.
+
+6.2 Downed state
+When a player reaches zero health, enter a defined downed state if the selected difficulty and game mode permit it.
+
+The downed player should:
+
+Play an appropriate animation.
+
+Be unable to perform normal combat.
+
+Receive clear visual feedback.
+
+See a teammate assistance indicator.
+
+Have a clearly displayed recovery or bleed-out timer if one is used.
+
+Be able to communicate if the voice system permits it.
+
+The player should not immediately disappear from the world unless the game design explicitly requires that behaviour.
+
+6.3 Revival interaction
+A teammate should be able to approach a downed player and begin a revival interaction.
+
+The revival system must include:
+
+Correct interaction range.
+
+A visible progress indicator.
+
+A defined revival duration.
+
+Animation.
+
+Sound feedback.
+
+Interruption rules.
+
+Successful completion.
+
+Health restoration.
+
+Multiplayer synchronisation.
+
+If the reviving player moves away, receives an interrupting attack or otherwise breaks the interaction conditions, cancel or pause the revival according to the chosen design.
+
+Prevent multiple players from completing duplicate revivals on the same teammate.
+
+6.4 Team failure
+Define what happens when all players are downed.
+
+Possible outcomes include:
+
+Restart from the latest checkpoint.
+
+Restart the current encounter.
+
+Return to the lobby.
+
+Offer a limited recovery option.
+
+Use the same clear rules for the whole team.
+
+Do not delete campaign progression because of a temporary network error.
+
+Keep checkpoint and failure behaviour consistent with the selected difficulty.
+
+SECTION 7 — MONSTER AND BOSS MULTIPLAYER FOUNDATIONS
+7.1 Shared monster state
+Every monster must have one authoritative gameplay state.
+
+Synchronise:
+
+Position.
+
+Rotation.
+
+Animation state.
+
+Health.
+
+Target.
+
+Detection state.
+
+Attack state.
+
+Damage reactions.
+
+Stagger.
+
+Death.
+
+Destruction.
+
+Relevant sound events.
+
+Do not run conflicting independent versions of the same monster on different clients.
+
+The authoritative system should determine important monster decisions.
+
+Clients should receive enough information to display the monster smoothly and consistently.
+
+7.2 Monster detection
+Preserve the established monster detection rules.
+
+Monsters must use genuine line-of-sight checks and hearing systems.
+
+A monster should visually detect a player only when it has a valid view of that player.
+
+Walls, buildings, closed doors and suitable cover should block visual detection.
+
+If a player disappears behind cover:
+
+The monster should lose direct visual contact.
+
+It should remember the last seen position.
+
+It should move towards that position.
+
+It should search nearby areas.
+
+It should investigate believable sound sources.
+
+It should eventually resume patrol if it cannot find the player.
+
+Do not allow monsters to know exact player positions through walls without a legitimate gameplay ability.
+
+Hearing should provide clues based on actual sound events rather than perfect knowledge of player coordinates.
+
+7.3 Physical monster movement
+All monsters must obey physical collision rules.
+
+They must not:
+
+Phase through walls.
+
+Teleport through floors.
+
+Clip through solid doors.
+
+Pass through buildings.
+
+Ignore collision geometry.
+
+Attack through solid objects without an appropriate attack mechanic.
+
+Monsters must use valid routes and physical openings.
+
+Large creatures should not fit through small vents or narrow doors.
+
+Smaller creatures may use openings that genuinely fit their bodies.
+
+Powerful monsters may break appropriate destructible barriers if their abilities and the environment support it.
+
+7.4 Multiplayer boss encounters
+Boss encounters must be shared events.
+
+The boss's health, attack phases, target, weak points and defeat state must be synchronised.
+
+Preserve the existing identities and designs of:
+
+THE HOLLOW.
+
+THE TITANFORGED.
+
+THE COLOSSUS.
+
+THE FORGE.
+
+Do not redesign existing bosses while upgrading their multiplayer behaviour.
+
+Every boss should have clearly readable attack preparation, execution and recovery.
+
+Players must have opportunities to react, evade, cooperate and counterattack.
+
+Do not allow network delay to make boss attacks appear to hit players before the animation or telegraph is visible.
+
+Boss defeat events must be processed once and shared consistently.
+
+SECTION 8 — GENERATOR AND OBJECTIVE NETWORKING
+8.1 Generator rules must remain unchanged
+Each generator requires ten different maths questions answered correctly.
+
+Only multiplication and division are allowed.
+
+Questions must be easy and have whole-number answers.
+
+Division must be exact.
+
+Never generate:
+
+Decimal answers.
+
+Fractions.
+
+Remainders.
+
+Complicated equations.
+
+Unrelated question types.
+
+Every correct answer adds 10% progress.
+
+Wrong answers do not remove existing progress.
+
+Players can retry indefinitely.
+
+Every generator must have its own unique set of ten questions.
+
+8.2 Multiplayer generator authority
+Generator progress must be stored as a shared authoritative value.
+
+All players must see the same percentage.
+
+For example:
+
+Initial progress: 0%.
+
+First correct answer: 10%.
+
+Fifth correct answer: 50%.
+
+Eighth correct answer: 80%.
+
+Tenth correct answer: 100%.
+
+When progress reaches 100%, activate the generator exactly once.
+
+If two players submit answers simultaneously, process each submission safely.
+
+Prevent:
+
+Duplicate answer submissions.
+
+Double progress increases.
+
+Progress above 100%.
+
+Progress disappearing after reconnection.
+
+Different generator states across players.
+
+8.3 Generator cooperation
+Players may take turns answering questions.
+
+One player may guard the area while another operates the generator.
+
+The system should not require every player to answer an equal number of questions.
+
+The shared generator objective should be understandable and fair.
+
+If a player disconnects during generator activation, preserve completed progress.
+
+SECTION 9 — MULTIPLAYER CINEMATICS AND CAMPAIGN TRANSITIONS
+9.1 Stage-ending cinematic requirement
+Every campaign stage must finish with a story-related cutscene that introduces or leads into the next stage.
+
+The cutscene must be part of the shared campaign.
+
+All connected players should experience the same important story event.
+
+The ten transitions must connect the established campaign:
+
+The Fallen City leads to The Silent Estates.
+
+The Silent Estates leads to The Dead Mall.
+
+The Dead Mall leads to The Dead Construction Zone.
+
+The Dead Construction Zone leads to The Underground.
+
+The Underground leads to The Forgotten Laboratory.
+
+The Forgotten Laboratory leads to The Iron Graveyard.
+
+The Iron Graveyard leads to Ground Zero.
+
+Ground Zero leads to The Titanforged.
+
+The Titanforged leads to The Final Signal.
+
+The Final Signal receives the campaign conclusion and, if appropriate, a post-credits reveal.
+
+Each cinematic must be unique and consistent with the story.
+
+9.2 Synchronised playback
+The cinematic manager must coordinate:
+
+Start event.
+
+Player readiness.
+
+Camera sequence.
+
+Character animation.
+
+Dialogue.
+
+Subtitles.
+
+Sound.
+
+Music.
+
+Important visual events.
+
+Completion event.
+
+Next-stage unlock.
+
+Do not allow one player to skip the cinematic for everyone without the defined group agreement.
+
+If a player disconnects, preserve the authoritative campaign state.
+
+When they reconnect, determine whether they should resume the cinematic, view a summary or continue with the current mission state.
+
+9.3 Cinematic graphics
+Preserve the game's ambitious ultra-realistic graphics direction in multiplayer cutscenes.
+
+Include high-quality lighting, detailed environments, realistic animation, smoke, fire, dust, ash, reflections and cinematic sound.
+
+Do not make multiplayer cinematics look like low-quality substitutes for the single-player presentation.
+
+Use scalable rendering settings where required by performance.
+
+SECTION 10 — GRAPHICS, ANIMATION AND PHYSICS IN MULTIPLAYER
+10.1 Visual quality
+The multiplayer game must preserve the established visual direction.
+
+The requested 1000× graphics improvement represents an ambitious quality target, not a literal technical multiplier.
+
+Maintain high-quality:
+
+Environment geometry.
+
+PBR materials.
+
+Textures.
+
+Shadows.
+
+Reflections.
+
+Lighting.
+
+Characters.
+
+Monsters.
+
+Bosses.
+
+Vegetation.
+
+Weather.
+
+Fire and smoke.
+
+Destruction.
+
+Cutscenes.
+
+Do not make multiplayer characters, monsters or environments visibly inferior without a genuine technical reason.
+
+10.2 Monster animation
+Preserve all existing monster designs.
+
+Improve the synchronisation of:
+
+Walking.
+
+Running.
+
+Turning.
+
+Attacking.
+
+Tentacle movement.
+
+Visible muscle contractions.
+
+Eye animation where existing eyes are present.
+
+Damage reactions.
+
+Death animations.
+
+Physical destruction.
+
+Muscles should contract naturally during movement, attacks and recovery.
+
+Do not use random scaling or cartoon-like bulging.
+
+Existing tentacles must preserve their established structure, number and proportions.
+
+10.3 Destruction and monster deaths
+When a monster dies, its death sequence must be synchronised.
+
+Use appropriate physical destruction and fragments, such as:
+
+Armour plates.
+
+Mechanical limbs.
+
+Existing tentacle sections.
+
+Exposed muscle sections.
+
+Joints.
+
+Parasite growths.
+
+Core components.
+
+Different monsters should have distinct death sequences.
+
+Bosses should have larger and more elaborate destruction sequences.
+
+Do not let a defeated monster continue dealing unfair damage to players.
+
+Keep the number of simulated fragments under control to protect multiplayer performance.
+
+10.4 Weather synchronisation
+All players in the same session must experience the same major weather state.
+
+Synchronise:
+
+Dust storms.
+
+Ash storms.
+
+Rain.
+
+Fog.
+
+Thunder.
+
+Orbital storms.
+
+Major lightning events.
+
+Important environmental changes.
+
+The visual position of individual particles may be generated locally for performance, provided the overall weather conditions and gameplay effects remain consistent.
+
+Do not allow one player to see a clear environment while another experiences a gameplay-affecting storm unless this is an intentional and fair design feature.
+
+SECTION 11 — DEVELOPMENT MILESTONES
+11.1 Milestone One: network foundation
+Implement and test:
+
+Basic session creation.
+
+Two-player connection.
+
+Player identities.
+
+Player spawning.
+
+Player movement.
+
+Player rotation.
+
+Basic animation synchronisation.
+
+Player disconnection.
+
+Basic session shutdown.
+
+Acceptance test: two players can join the same test environment, see each other, move, interact with basic objects and leave without creating duplicate characters or corrupting the session.
+
+11.2 Milestone Two: shared gameplay
+Implement:
+
+Health.
+
+Damage.
+
+Weapons.
+
+Basic combat.
+
+Inventory.
+
+Pickups.
+
+Doors.
+
+Shared objectives.
+
+Generator progress.
+
+Player downed state.
+
+Revival.
+
+Acceptance test: two players can complete a basic cooperative encounter and see consistent gameplay results.
+
+11.3 Milestone Three: monster networking
+Implement:
+
+Monster spawning.
+
+Monster authority.
+
+Target selection.
+
+Detection.
+
+Line of sight.
+
+Hearing.
+
+Movement.
+
+Attacks.
+
+Damage.
+
+Death.
+
+Destruction.
+
+Acceptance test: both players experience the same monster encounter, and the monster does not duplicate, teleport through solid objects or display contradictory health states.
+
+11.4 Milestone Four: campaign integration
+Implement:
+
+Campaign stage selection.
+
+Shared mission state.
+
+Stage objectives.
+
+Generator requirements.
+
+Checkpoints.
+
+Stage completion.
+
+Shared cutscenes.
+
+Next-stage transitions.
+
+Campaign saving.
+
+Acceptance test: two players can finish a test stage, experience the same ending cinematic and proceed to the next stage without losing mission progress.
+
+11.5 Milestone Five: expansion
+After the two-player experience is stable, expand to four players.
+
+Test increased network traffic, AI behaviour, physics, player interactions, combat and cinematic synchronisation.
+
+Do not expand the player count simply because the lobby can display four names. All four players must be able to participate in real gameplay.
+
+SECTION 12 — TESTING AND QUALITY ASSURANCE
+Create a multiplayer test plan covering normal, unusual and failure conditions.
+
+Test:
+
+Two players joining simultaneously.
+
+Multiple players interacting with the same object.
+
+Players entering different rooms.
+
+Players separating across the map.
+
+Players reconnecting.
+
+Players leaving during combat.
+
+Players leaving during a cutscene.
+
+Players joining a session already in progress, if supported.
+
+Simultaneous generator submissions.
+
+Multiple players attacking one monster.
+
+Multiple players fighting a boss.
+
+A player being downed while another revives them.
+
+All players becoming incapacitated.
+
+Weather changing during combat.
+
+A storm beginning during a cinematic.
+
+Campaign completion during unstable network conditions.
+
+Save recovery after unexpected shutdown.
+
+Test using different network conditions, including latency, packet loss and temporary connection interruptions.
+
+Record reproducible bugs.
+
+For every bug, document:
+
+Steps to reproduce.
+
+Expected behaviour.
+
+Actual behaviour.
+
+Relevant network conditions.
+
+Root cause.
+
+Fix.
+
+Regression test.
+
+Do not close a bug merely because it could not be reproduced once.
+
+12.1 Performance testing
+Measure:
+
+Server or host frame rate.
+
+Client frame rate.
+
+Network bandwidth.
+
+Latency.
+
+Packet loss.
+
+CPU use.
+
+GPU use.
+
+Memory.
+
+AI processing.
+
+Physics processing.
+
+Particle count.
+
+Destruction-object count.
+
+Set performance budgets based on the intended hardware.
+
+Optimise network updates and avoid sending unnecessary information.
+
+Use relevance-based updates where appropriate, but do not hide information that a nearby player needs for fair gameplay.
+
+12.2 Security and integrity
+Validate important gameplay actions.
+
+Prevent:
+
+Forged objective completion.
+
+Invalid inventory changes.
+
+Impossible movement.
+
+Duplicate rewards.
+
+Repeated damage submissions.
+
+Unauthorised session control.
+
+Invalid player identities.
+
+Arbitrary boss defeat messages.
+
+Generator progress manipulation.
+
+Use secure transport and platform-approved authentication where available.
+
+Do not store account credentials or sensitive authentication data in ordinary game files.
+
+SECTION 13 — PART 1 FINAL ACCEPTANCE CHECKLIST
+Part 1 is complete only when the project has a documented and tested foundation for:
+
+Two-player cooperative networking.
+
+Unique network player identities.
+
+Session management.
+
+Player movement synchronisation.
+
+Shared game state.
+
+Authoritative mission progression.
+
+Shared player health.
+
+Shared combat results.
+
+Basic monster synchronisation.
+
+Shared generator progress.
+
+Downed and revival systems.
+
+Multiplayer cutscene coordination.
+
+Campaign progression.
+
+Reconnection behaviour appropriate to the architecture.
+
+Global collision integrity.
+
+Initial performance and network tests.
+
+The development AI must produce a report containing:
+
+Which systems already existed.
+
+Which systems were modified.
+
+Which systems were created.
+
+Which systems are fully implemented.
+
+Which systems are only prototypes.
+
+Which tests passed.
+
+Which tests failed.
+
+Known limitations.
+
+Remaining bugs.
+
+Next development tasks.
+
+Do not report a feature as complete when only its user interface exists.
+
+Do not create fake multiplayer functionality that works only in a local demonstration.
+
+Do not remove existing single-player functionality while implementing multiplayer.
+
+Do not change the established lore, generator rules, monster identities or campaign structure without explicit approval.
+
+END OF PART 1 OF 10.
+
+CONTINUATION RULE: Part 2 must expand the lobby, invitations, matchmaking, session discovery, player readiness, character selection, connection management and joining/leaving flows. It must retain all requirements from Part 1.
+

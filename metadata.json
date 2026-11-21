@@ -1,0 +1,8 @@
+{
+  "name": "Remix Remix Remix Remix Remix Remix Remix Remix Remix Remix Remix THE WORLD HAS ROTTEN",
+  "description": "3D first-person sci-fi survival horror adventure set in the infected ruins of New Eden, 3062 AD.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
