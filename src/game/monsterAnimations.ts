@@ -185,9 +185,9 @@ export function triggerMonsterStagger(
 ): void {
   anim.staggerZone = hitZone;
   anim.staggerSign = lateralSign >= 0 ? 1 : -1;
-  anim.staggerDuration = isHeavyHit ? 0.48 : 0.28;
+  anim.staggerDuration = isHeavyHit ? 0.56 : 0.36;
   anim.staggerTimer = anim.staggerDuration;
-  anim.hurtEyeTimer = 0.55;
+  anim.hurtEyeTimer = isHeavyHit ? 0.72 : 0.52;
   // Interrupt Titanforged parasite_regen cleanly if head/neck takes heavy stagger
   if (anim.animState === 'ATTACK' && anim.attackKind === 'parasite_regen' && (isHeavyHit || hitZone === 'head' || hitZone === 'neck')) {
     anim.animState = 'STAGGER';
@@ -943,17 +943,40 @@ export function updateMonsterAnimations(
   // -------------------------------------------------------------------------
   // 6. HIT-ZONE DAMAGE FLINCH / STAGGER OVERLAY
   // -------------------------------------------------------------------------
+  let headStrikeYaw = 0;
+  let armRecoilL = 0;
+  let armRecoilR = 0;
+  let legBuckle = 0;
+
   if (anim.staggerTimer > 0) {
     const sEnv = anim.staggerTimer / Math.max(0.1, anim.staggerDuration);
+    const snap = Math.sin(Math.min(1, sEnv) * Math.PI * 0.85) + sEnv * 0.35;
+    targetJawOpen = Math.max(targetJawOpen, 0.72 * Math.min(1, sEnv * 1.4));
+
     if (anim.staggerZone === 'head' || anim.staggerZone === 'neck') {
-      headStrikePitch -= 0.55 * sEnv;
-      targetTorsoPitch -= 0.24 * sEnv;
+      headStrikePitch -= 0.78 * snap;
+      headStrikeYaw += anim.staggerSign * 0.48 * snap;
+      targetTorsoPitch -= 0.34 * snap;
+      targetTorsoRoll += anim.staggerSign * 0.24 * snap;
+      armRecoilL -= 0.45 * snap;
+      armRecoilR -= 0.45 * snap;
     } else if (anim.staggerZone === 'leg') {
-      targetBodyBob -= 0.22 * sEnv;
-      targetTorsoRoll += anim.staggerSign * 0.35 * sEnv;
+      targetBodyBob -= 0.34 * snap;
+      targetTorsoRoll += anim.staggerSign * 0.46 * snap;
+      targetTorsoPitch += 0.24 * snap;
+      legBuckle = 0.68 * snap;
     } else {
-      targetTorsoRoll += anim.staggerSign * 0.28 * sEnv;
-      targetTorsoPitch -= 0.16 * sEnv;
+      targetTorsoRoll += anim.staggerSign * 0.42 * snap;
+      targetTorsoPitch -= 0.28 * snap;
+      headStrikePitch -= 0.28 * snap;
+      headStrikeYaw += anim.staggerSign * 0.24 * snap;
+      if (anim.staggerSign > 0) {
+        armRecoilR += 0.72 * snap;
+        armRecoilL -= 0.32 * snap;
+      } else {
+        armRecoilL += 0.72 * snap;
+        armRecoilR -= 0.32 * snap;
+      }
     }
   }
 
@@ -1024,9 +1047,9 @@ export function updateMonsterAnimations(
       targetHip -= stompLegLift * 0.92;
       targetKnee += stompLegLift * 0.98;
     }
-    if (leapLegBend !== 0) {
-      targetHip -= leapLegBend * 0.55;
-      targetKnee += leapLegBend * 0.85;
+    if (leapLegBend !== 0 || legBuckle > 0) {
+      targetHip -= leapLegBend * 0.55 + legBuckle * 0.42;
+      targetKnee += leapLegBend * 0.85 + legBuckle * 0.75;
     }
 
     const axis = leg.hipAxis ?? 'x';
@@ -1046,18 +1069,24 @@ export function updateMonsterAnimations(
     const swing = Math.sin(anim.stridePhase + arm.phaseOffset) * maxAmp * (0.65 + anim.runBlend * 0.35);
     const atkS = i % 2 === 0 ? armAttackL : armAttackR;
     const atkE = i % 2 === 0 ? elbowAttackL : elbowAttackR;
+    const dmgRecoil = i % 2 === 0 ? armRecoilL : armRecoilR;
     const bossIntroLift = anim.animState === 'BOSS_INTRO' ? -0.9 : 0;
     const jitter = (i === 1 ? malfunc : 0) + clawTwitch * side;
     const stairBrace = onStairs || onEscalator ? -0.14 : 0;
 
-    const targetShoulderX = arm.baseShoulderX + swing + atkS + bossIntroLift + jitter + shoulderBreathHeave + stairBrace;
+    const targetShoulderX =
+      arm.baseShoulderX + swing + atkS + dmgRecoil + bossIntroLift + jitter + shoulderBreathHeave + stairBrace;
     const targetElbowX =
-      arm.baseElbowX + Math.cos(anim.stridePhase + arm.phaseOffset) * maxAmp * 0.35 + atkE - anim.muscleTension * 0.12;
+      arm.baseElbowX +
+      Math.cos(anim.stridePhase + arm.phaseOffset) * maxAmp * 0.35 +
+      atkE -
+      Math.abs(dmgRecoil) * 0.35 -
+      anim.muscleTension * 0.12;
 
     arm.shoulder.rotation.x = THREE.MathUtils.damp(arm.shoulder.rotation.x, targetShoulderX, 13, dt);
     arm.shoulder.rotation.z = THREE.MathUtils.damp(
       arm.shoulder.rotation.z,
-      side * (armSpread + anim.muscleTension * 0.08),
+      side * (armSpread + anim.muscleTension * 0.08 + (anim.staggerTimer > 0 ? 0.14 : 0)),
       12,
       dt
     );
@@ -1116,18 +1145,23 @@ export function updateMonsterAnimations(
 
     if (refs.coreMaterials && refs.coreMaterials.length > 0) {
       const isChargingGravity = attackActive && anim.attackKind === 'gravity_pulse';
-      const targetCore = isChargingGravity
-        ? 4.6
-        : anim.animState === 'BOSS_INTRO' || aiState === 'ATTACK'
-          ? 3.1 + (bossPhase >= 5 ? 1.0 : 0)
-          : aiState === 'CHASE'
-            ? 2.6 + bossPhase * 0.28
-            : aiState === 'SEARCH'
-              ? 2.1
-              : 1.45;
+      const hurtBoost = anim.staggerTimer > 0 ? 1.35 : 0;
+      const organicPulse = 0.88 + Math.sin(time * (aiState === 'ATTACK' ? 7.5 : 3.2) + position.x) * 0.16;
+      const targetCore =
+        (isChargingGravity
+          ? 4.8
+          : anim.animState === 'BOSS_INTRO' || aiState === 'ATTACK'
+            ? 3.45 + (bossPhase >= 5 ? 1.0 : 0)
+            : aiState === 'CHASE'
+              ? 2.95 + bossPhase * 0.28
+              : aiState === 'SEARCH'
+                ? 2.35
+                : 1.75) *
+          organicPulse +
+        hurtBoost;
       const flicker =
         profile.isMech && healthRatio < 0.5 && Math.sin(time * 31) > 0.72 ? 0.35 : 1.0;
-      anim.coreIntensity = THREE.MathUtils.damp(anim.coreIntensity, targetCore * flicker, 10, dt);
+      anim.coreIntensity = THREE.MathUtils.damp(anim.coreIntensity, targetCore * flicker, 11, dt);
       for (let i = 0; i < refs.coreMaterials.length; i++) {
         refs.coreMaterials[i].emissiveIntensity = anim.coreIntensity;
       }
@@ -1137,7 +1171,7 @@ export function updateMonsterAnimations(
     // 9. MONSTER FACES, EYE TRACKING, HEAD TILT & JAW ANIMATION
     // -----------------------------------------------------------------------
     if (refs.headGroup) {
-      let desiredLocalYaw = 0;
+      let desiredLocalYaw = headStrikeYaw;
       let desiredPitch = headStrikePitch;
       let desiredRoll = 0;
 
@@ -1147,7 +1181,7 @@ export function updateMonsterAnimations(
         let relYaw = Math.atan2(dx, dz) - yaw;
         while (relYaw > Math.PI) relYaw -= Math.PI * 2;
         while (relYaw < -Math.PI) relYaw += Math.PI * 2;
-        desiredLocalYaw = THREE.MathUtils.clamp(relYaw, -0.68, 0.68);
+        desiredLocalYaw = THREE.MathUtils.clamp(relYaw + headStrikeYaw, -0.78, 0.78);
         if (aiState === 'SEARCH') {
           desiredLocalYaw += Math.sin(time * 1.9) * 0.35;
           desiredRoll = Math.sin(time * 1.4) * 0.18;
@@ -1156,21 +1190,21 @@ export function updateMonsterAnimations(
         // Subtle unnatural biomechanical servo head twitch
         const mechJitter = Math.sin(time * 13.7 + position.x) > 0.88 ? Math.sin(time * 47) * 0.14 : 0;
         if (anim.idleVariant === 1) {
-          desiredLocalYaw = Math.sin(time * 1.2) * 0.42 + mechJitter;
+          desiredLocalYaw += Math.sin(time * 1.2) * 0.42 + mechJitter;
           desiredRoll = Math.sin(time * 1.2) * 0.12 + mechJitter * 0.7;
         } else if (anim.idleVariant === 2) {
           const pulse = Math.sin(time * 7.5);
-          desiredLocalYaw = (pulse > 0.78 ? 0.38 * anim.deathDir : 0) + mechJitter;
+          desiredLocalYaw += (pulse > 0.78 ? 0.38 * anim.deathDir : 0) + mechJitter;
           desiredRoll = (pulse > 0.78 ? -0.22 * anim.deathDir : 0) + mechJitter * 0.6;
         } else {
-          desiredLocalYaw = mechJitter;
+          desiredLocalYaw += mechJitter;
           desiredRoll = 0.06 * anim.deathDir + mechJitter * 0.5;
         }
       } else if (anim.animState === 'BOSS_INTRO') {
         desiredPitch = -0.35;
       }
 
-      const headDamp = weight === 'small' ? 16 : 9;
+      const headDamp = anim.staggerTimer > 0 ? 22 : weight === 'small' ? 16 : 9;
       anim.headYaw = THREE.MathUtils.damp(anim.headYaw, desiredLocalYaw, headDamp, dt);
       anim.headPitch = THREE.MathUtils.damp(anim.headPitch, desiredPitch, headDamp, dt);
       anim.headRoll = THREE.MathUtils.damp(anim.headRoll, desiredRoll, headDamp, dt);

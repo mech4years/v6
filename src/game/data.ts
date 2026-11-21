@@ -7,25 +7,344 @@ import {
   LoreEntry,
   MissionDef,
   PuzzleDef,
+  StoryCharacterDef,
   WeaponDef,
   WeaponId,
   WeaponUpgradeState,
   WorldRegionDef,
 } from './types';
 
+export function normalizeCharacterId(id?: string | null): CharacterId {
+  if (
+    id === 'reaper' ||
+    id === 'ghost' ||
+    id === 'titan' ||
+    id === 'patch' ||
+    id === 'phantom' ||
+    id === 'engineer' ||
+    id === 'wanderer' ||
+    id === 'raven' ||
+    id === 'brute' ||
+    id === 'nyx' ||
+    id === 'zero'
+  ) {
+    return id;
+  }
+  return 'reaper';
+}
+
 export const CHARACTERS: Record<CharacterId, CharacterDef> = {
+  reaper: {
+    id: 'reaper',
+    callsign: 'REAPER',
+    classification: 'ASSAULT SPECIALIST',
+    role: 'Assault Specialist',
+    bio: 'Former Black-Sector breach sergeant carrying scarred composite plate and an overclocked VX-47 carbine. Excels at sustained frontline suppression.',
+    backstory:
+      'After the 3059 HELIOS orbital collapse, Reaper led three evacuation corridors through New Eden before his platoon fell to the infected steel plague. He fights with cold precision and zero hesitation.',
+    appearanceSummary:
+      'Scarred tactical half-mask & ballistic skull visor, weathered olive-charcoal plate carrier, twin magazine chest pouches, mud-stained combat boots.',
+    primaryWeapon: 'assault_rifle',
+    equipmentList: [
+      'VX-47 Assault Rifle (32-rd Mag)',
+      'P-2025 Tactical Sidearm',
+      'Composite Trauma Rig + Bandolier',
+      'Stim-Overdrive Autoinjector',
+    ],
+    stats: {
+      health: 115,
+      speed: 78,
+      armor: 80,
+      damage: 88,
+      specialtyLabel: 'Weapon Handling',
+      specialtyValue: 92,
+    },
+    ability: {
+      name: 'OVERDRIVE',
+      description:
+        'Adrenal tactical surge increases movement speed by 45%, boosts weapon damage by 15%, and cuts reload duration by 40% for 8 seconds.',
+      duration: 8,
+      cooldown: 21,
+      accentColor: '#ef4444',
+    },
+    voiceProfile: { pitchHz: 112, timbre: 'gravel', personalityTag: 'Disciplined Tactician' },
+    damageMult: 1.1,
+    critMult: 1.15,
+    damageResist: 0.05,
+    isPrimaryRoster: true,
+    armorColor: '#1f2329',
+    trimColor: '#4c1d24',
+    visorColor: '#ef4444',
+  },
+  ghost: {
+    id: 'ghost',
+    callsign: 'GHOST',
+    classification: 'SNIPER SPECIALIST',
+    role: 'Sniper Specialist',
+    bio: 'Long-range quarantine hunter equipped with ballistic rangefinder optics and cryo-dampened ghillie weaves for lethal precision shots.',
+    backstory:
+      'Stationed atop the ruined New Eden spires for fourteen months, Ghost tracked infected packs across rusted rooftops without firing a single wasted round.',
+    appearanceSummary:
+      'Matte graphite tactical shroud, multi-optic thermal sniper monocle, open lower face scarf, silenced rangefinder rig.',
+    primaryWeapon: 'sniper_rifle',
+    equipmentList: [
+      'M99 Longbow Anti-Materiel Rifle',
+      'Optic Shroud Cloaking Weave',
+      'Ballistic Rangefinder Visor',
+      'P-2025 Suppressed Sidearm',
+    ],
+    stats: {
+      health: 90,
+      speed: 96,
+      armor: 50,
+      damage: 98,
+      specialtyLabel: 'Critical Precision',
+      specialtyValue: 100,
+    },
+    ability: {
+      name: 'SHADOW',
+      description:
+        'Engages acoustic and optical dampening for 10s: reduces enemy detection radius by 75%, silences gunshots, and amplifies weakpoint critical damage by 30%.',
+      duration: 10,
+      cooldown: 23,
+      accentColor: '#38bdf8',
+    },
+    voiceProfile: { pitchHz: 138, timbre: 'calm', personalityTag: 'Detached Marksman' },
+    damageMult: 1.05,
+    critMult: 1.32,
+    damageResist: 0,
+    isPrimaryRoster: true,
+    armorColor: '#14171c',
+    trimColor: '#293445',
+    visorColor: '#38bdf8',
+  },
+  titan: {
+    id: 'titan',
+    callsign: 'TITAN',
+    classification: 'HEAVY ASSAULT',
+    role: 'Heavy Tank',
+    bio: 'Powered siege-frame juggernaut built to anchor collapsing choke points and absorb brutal impacts that shred lighter squads.',
+    backstory:
+      'A veteran of the Iron Wilds industrial front, Titan refused to abandon his powered siege chassis even after the infected steel swarm tore through Reactor 7.',
+    appearanceSummary:
+      'Massive gunmetal exoskeleton, layered ceramic-steel pauldrons, heavy blast visor with open reinforced jaw grille, hydraulic gauntlets.',
+    primaryWeapon: 'heavy_mg',
+    equipmentList: [
+      'M240 Vulcan Heavy Machine Gun',
+      'Mk-IV Hydraulic Siege Pauldrons',
+      'Blast-Lock Servo Stabilizers',
+      'Reinforced Ceramic Chestplate',
+    ],
+    stats: {
+      health: 165,
+      speed: 52,
+      armor: 120,
+      damage: 86,
+      specialtyLabel: 'Blast Resistance',
+      specialtyValue: 100,
+    },
+    ability: {
+      name: 'FORTRESS',
+      description:
+        'Locks heavy servo plating for 9s: absorbs 70% of all incoming damage, prevents knockdown stagger, and bolsters armor by +25.',
+      duration: 9,
+      cooldown: 23,
+      accentColor: '#f59e0b',
+    },
+    voiceProfile: { pitchHz: 86, timbre: 'heavy', personalityTag: 'Stoic Juggernaut' },
+    damageMult: 1.05,
+    critMult: 1.0,
+    damageResist: 0.18,
+    isPrimaryRoster: true,
+    armorColor: '#262930',
+    trimColor: '#6b5335',
+    visorColor: '#f59e0b',
+  },
+  patch: {
+    id: 'patch',
+    callsign: 'PATCH',
+    classification: 'COMBAT MEDIC',
+    role: 'Combat Medic',
+    bio: 'Quarantine triage specialist carrying aerosol nanite canisters, trauma defibrillators, and limb-stabilizing bio-gel dispensers.',
+    backstory:
+      'When Field Hospital 12 went dark, Patch kept twenty-two wounded survivors alive for six days using improvised power cells and antimicrobial nanites.',
+    appearanceSummary:
+      'Crimson-and-white field trauma armor, illuminated medical visor goggles, shoulder bio-gel tank, sterile gauntlet injector.',
+    primaryWeapon: 'tactical_rifle',
+    equipmentList: [
+      'T-19 Pulse Tactical Carbine',
+      'Biotic Nanite Field Projector',
+      'Trauma Limb-Repair Stim Pack',
+      'Diagnostic Cardiac Telemetry Link',
+    ],
+    stats: {
+      health: 110,
+      speed: 82,
+      armor: 70,
+      damage: 74,
+      specialtyLabel: 'Trauma Recovery',
+      specialtyValue: 100,
+    },
+    ability: {
+      name: 'BIOTIC FIELD',
+      description:
+        'Deploys a glowing nanite restoration field for 9s: immediately restores +45 HP, repairs damaged suit limbs (+40%), and continuously regenerates health.',
+      duration: 9,
+      cooldown: 22,
+      accentColor: '#10b981',
+    },
+    voiceProfile: { pitchHz: 175, timbre: 'clinical', personalityTag: 'Focused Field Medic' },
+    damageMult: 0.96,
+    critMult: 1.1,
+    damageResist: 0.08,
+    isPrimaryRoster: true,
+    armorColor: '#1c2426',
+    trimColor: '#0f766e',
+    visorColor: '#34d399',
+  },
+  phantom: {
+    id: 'phantom',
+    callsign: 'PHANTOM',
+    classification: 'STEALTH OPERATIVE',
+    role: 'Stealth Operative',
+    bio: 'Infiltration specialist wrapped in light-bending phase fibers. Vanishes between shadows to flank and execute unaware infected.',
+    backstory:
+      'Trained inside Orbital Black-Wing projects, Phantom was presumed KIA in Sector 4 until corrupted HELIOS cameras caught a shadow dismantling whole patrols.',
+    appearanceSummary:
+      'Sleek obsidian stealth weave, violet phase-emitter harness, hooded half-mask with twin cybernetic optics.',
+    primaryWeapon: 'tactical_rifle',
+    equipmentList: [
+      'Suppressed T-19 Tactical Rifle',
+      'Phase-Veil Optical Cloak',
+      'Acoustic Nullifier Boots',
+      'Monomolecular Combat Blade',
+    ],
+    stats: {
+      health: 95,
+      speed: 100,
+      armor: 55,
+      damage: 90,
+      specialtyLabel: 'Stealth Infiltration',
+      specialtyValue: 100,
+    },
+    ability: {
+      name: 'PHASE VEIL',
+      description:
+        'Bends light around your rig for 8.5s: drops enemy detection radius by 88%, boosts sprint speed by 35%, and adds +45% ambush damage.',
+      duration: 8.5,
+      cooldown: 22,
+      accentColor: '#a855f7',
+    },
+    voiceProfile: { pitchHz: 152, timbre: 'whisper', personalityTag: 'Silent Infiltrator' },
+    damageMult: 1.06,
+    critMult: 1.25,
+    damageResist: 0.04,
+    isPrimaryRoster: true,
+    armorColor: '#12121b',
+    trimColor: '#4c1d95',
+    visorColor: '#c084fc',
+  },
+  engineer: {
+    id: 'engineer',
+    callsign: 'ENGINEER',
+    classification: 'TECHNICAL SPECIALIST',
+    role: 'Technical Specialist',
+    bio: 'Robotics and power-grid architect who fabricates automated sentry turrets and overrides encrypted HELIOS quarantine locks.',
+    backstory:
+      'Formerly chief maintenance lead on HELIOS Sector 9, Engineer rewired corrupted defense servos into lethal automated turrets to hold back the horde.',
+    appearanceSummary:
+      'Industrial hazard-slate jacket over kevlar plating, folding welding visor goggles, twin servo tool-pack, glowing orange telemetry cuff.',
+    primaryWeapon: 'shotgun',
+    equipmentList: [
+      'SG-88 Combat Trench Shotgun',
+      'Deployable Mk-II Sentry Turret',
+      'HELIOS Encryption Bypass Deck',
+      'Arc-Welder Diagnostics Gauntlet',
+    ],
+    stats: {
+      health: 105,
+      speed: 80,
+      armor: 75,
+      damage: 84,
+      specialtyLabel: 'Robotics & Grid Tech',
+      specialtyValue: 100,
+    },
+    ability: {
+      name: 'AUTOMATED TURRET',
+      description:
+        'Deploys an autonomous heavy sentry turret for 14s that tracks and fires high-velocity rounds at infected within 19m while repairing +15 armor.',
+      duration: 14,
+      cooldown: 24,
+      accentColor: '#fb923c',
+    },
+    voiceProfile: { pitchHz: 146, timbre: 'raspy', personalityTag: 'Pragmatic Systems Tech' },
+    damageMult: 1.0,
+    critMult: 1.12,
+    damageResist: 0.06,
+    isPrimaryRoster: true,
+    armorColor: '#23201c',
+    trimColor: '#9a3412',
+    visorColor: '#fb923c',
+  },
+  wanderer: {
+    id: 'wanderer',
+    callsign: 'THE WANDERER',
+    classification: 'FIREARMS EXPERT',
+    role: 'Lone Survivor',
+    bio: 'Hardened wasteland drifter and unmatched firearms savant who survived three winters inside the Quarantine Zone on pure grit and gunsmoke.',
+    backstory:
+      'Nobody knows which convoy the Wanderer walked away from in 3060 AD—only that wherever the deadliest packs hunt, spent brass and dead biomechanical husks mark his trail.',
+    appearanceSummary:
+      'Dust-caked armored trench duster, scarred jawline beneath ballistic goggles, leather shell bandolier, mismatched salvaged knee guards.',
+    primaryWeapon: 'shotgun',
+    equipmentList: [
+      'SG-88 Custom Trench Shotgun',
+      'Quick-Draw Twin Holster Rig',
+      'Hand-Loaded High-Brass Shells',
+      'P-2025 Match-Grade Sidearm',
+    ],
+    stats: {
+      health: 110,
+      speed: 86,
+      armor: 70,
+      damage: 96,
+      specialtyLabel: 'Firearms Mastery',
+      specialtyValue: 100,
+    },
+    ability: {
+      name: 'DEADEYE BARRAGE',
+      description:
+        'Instantly reloads your equipped weapon and enters bottomless-chamber overdrive for 6s with +35% fire rate and +20% all ballistic damage.',
+      duration: 6,
+      cooldown: 21,
+      accentColor: '#eab308',
+    },
+    voiceProfile: { pitchHz: 118, timbre: 'gravel', personalityTag: 'Hardened Drifter' },
+    damageMult: 1.16,
+    critMult: 1.2,
+    damageResist: 0.05,
+    isPrimaryRoster: true,
+    armorColor: '#29221c',
+    trimColor: '#713f12',
+    visorColor: '#facc15',
+  },
   raven: {
     id: 'raven',
     callsign: 'RAVEN',
-    role: 'Assault Specialist',
+    classification: 'VANGUARD BREACHER',
+    role: 'Assault Vanguard',
     bio: 'Veteran breach squad leader from the 4th Orbital Vanguard. Outfitted for sustained firefights inside fallen megacity sectors.',
+    backstory:
+      'Commander of Vanguard Squad Zero-Alpha during the initial orbital drop into New Eden.',
     appearanceSummary:
       'Heavy black tactical military armor, reinforced steel chest plates, enclosed helmet with narrow crimson visor.',
     primaryWeapon: 'assault_rifle',
+    equipmentList: ['VX-47 Assault Rifle', 'Vanguard Breacher Plate', 'Neural Combat Stim'],
     stats: {
-      health: 100,
-      speed: 75,
+      health: 105,
+      speed: 78,
       armor: 75,
+      damage: 85,
       specialtyLabel: 'Weapon Handling',
       specialtyValue: 90,
     },
@@ -37,49 +356,30 @@ export const CHARACTERS: Record<CharacterId, CharacterDef> = {
       cooldown: 22,
       accentColor: '#ef4444',
     },
+    voiceProfile: { pitchHz: 124, timbre: 'gravel', personalityTag: 'Vanguard Leader' },
+    damageMult: 1.05,
+    critMult: 1.1,
+    damageResist: 0.04,
     armorColor: '#1b1e24',
     trimColor: '#3f4654',
     visorColor: '#ef4444',
   },
-  ghost: {
-    id: 'ghost',
-    callsign: 'GHOST',
-    role: 'Silent Hunter',
-    bio: 'Reconnaissance marksman trained to slip past infected sensor grids before the machines realize they are being hunted.',
-    appearanceSummary:
-      'Lightweight matte graphite weave, full-coverage ballistic shroud, narrow optical thermal visor.',
-    primaryWeapon: 'sniper_rifle',
-    stats: {
-      health: 85,
-      speed: 100,
-      armor: 45,
-      specialtyLabel: 'Precision',
-      specialtyValue: 100,
-    },
-    ability: {
-      name: 'SHADOW',
-      description:
-        'Active signature dampening reduces enemy detection radius by 75% and silences movement for 10 seconds.',
-      duration: 10,
-      cooldown: 24,
-      accentColor: '#38bdf8',
-    },
-    armorColor: '#14171c',
-    trimColor: '#29303d',
-    visorColor: '#38bdf8',
-  },
   brute: {
     id: 'brute',
     callsign: 'BRUTE',
+    classification: 'VANGUARD SIEGE',
     role: 'Heavy Assault',
     bio: 'Exo-frame shock trooper tasked with holding perimeter chokepoints against corrupted military platforms.',
+    backstory: 'Heavy suppression specialist built for frontline breach corridors.',
     appearanceSummary:
       'Massive powered exoskeleton, heavy armored gauntlets, thick blast plating, oversized shoulder hydraulics.',
     primaryWeapon: 'heavy_mg',
+    equipmentList: ['M240 Heavy Machine Gun', 'Shock Exoskeleton Frame', 'Fortress Blast Locks'],
     stats: {
       health: 150,
-      speed: 45,
+      speed: 48,
       armor: 100,
+      damage: 85,
       specialtyLabel: 'Firepower',
       specialtyValue: 100,
     },
@@ -91,6 +391,10 @@ export const CHARACTERS: Record<CharacterId, CharacterDef> = {
       cooldown: 24,
       accentColor: '#f59e0b',
     },
+    voiceProfile: { pitchHz: 88, timbre: 'heavy', personalityTag: 'Siege Enforcer' },
+    damageMult: 1.04,
+    critMult: 1.0,
+    damageResist: 0.14,
     armorColor: '#24272d',
     trimColor: '#57534e',
     visorColor: '#f59e0b',
@@ -98,15 +402,19 @@ export const CHARACTERS: Record<CharacterId, CharacterDef> = {
   nyx: {
     id: 'nyx',
     callsign: 'NYX',
+    classification: 'VANGUARD TECH',
     role: 'Combat Engineer',
     bio: 'Former HELIOS grid systems specialist carrying field-repair hardware capable of bypassing dead military networks.',
+    backstory: 'Survived the orbital grid hijack and turned HELIOS subroutines against the swarm.',
     appearanceSummary:
       'Medium-weight black and dark-crimson armor, multi-lens optical helmet, mechanical utility backpack, wrist uplink.',
     primaryWeapon: 'tactical_rifle',
+    equipmentList: ['T-19 Tactical Rifle', 'Autonomous Support Drone', 'Grid Bypass Deck'],
     stats: {
       health: 100,
-      speed: 80,
+      speed: 82,
       armor: 65,
+      damage: 80,
       specialtyLabel: 'Technical Ability',
       specialtyValue: 100,
     },
@@ -118,6 +426,10 @@ export const CHARACTERS: Record<CharacterId, CharacterDef> = {
       cooldown: 24,
       accentColor: '#dc2626',
     },
+    voiceProfile: { pitchHz: 184, timbre: 'clinical', personalityTag: 'Grid Specialist' },
+    damageMult: 1.0,
+    critMult: 1.12,
+    damageResist: 0.05,
     armorColor: '#1a1518',
     trimColor: '#7f1d1d',
     visorColor: '#f87171',
@@ -125,15 +437,20 @@ export const CHARACTERS: Record<CharacterId, CharacterDef> = {
   zero: {
     id: 'zero',
     callsign: 'ZERO',
+    classification: 'SECTOR ZERO SUBJECT',
     role: 'Experimental Operative',
     bio: 'Classified Sector Zero test subject equipped with a prototype chest reactor designed to sever alien metallic links.',
+    backstory:
+      'Broke out of Dr. Zero’s subterranean chamber carrying unstable reactor implants capable of shattering biomechanical armor.',
     appearanceSummary:
       'Experimental black composite suit, glowing crimson energy veins, sealed prototype helmet, chest reactor core.',
     primaryWeapon: 'energy_rifle',
+    equipmentList: ['HEL-9 Prototype Energy Rifle', 'Chest Arc Reactor Core', 'EMP Shockwave Capacitor'],
     stats: {
       health: 110,
       speed: 85,
       armor: 75,
+      damage: 94,
       specialtyLabel: 'Energy Damage',
       specialtyValue: 100,
     },
@@ -145,6 +462,10 @@ export const CHARACTERS: Record<CharacterId, CharacterDef> = {
       cooldown: 20,
       accentColor: '#fb7185',
     },
+    voiceProfile: { pitchHz: 105, timbre: 'synthetic', personalityTag: 'Unstable Reactor Subject' },
+    damageMult: 1.08,
+    critMult: 1.18,
+    damageResist: 0.06,
     armorColor: '#101014',
     trimColor: '#991b1b',
     visorColor: '#fb7185',
@@ -152,11 +473,70 @@ export const CHARACTERS: Record<CharacterId, CharacterDef> = {
 };
 
 export const CHARACTER_LIST: CharacterDef[] = [
-  CHARACTERS.raven,
+  CHARACTERS.reaper,
   CHARACTERS.ghost,
+  CHARACTERS.titan,
+  CHARACTERS.patch,
+  CHARACTERS.phantom,
+  CHARACTERS.engineer,
+  CHARACTERS.wanderer,
+  CHARACTERS.raven,
   CHARACTERS.brute,
   CHARACTERS.nyx,
   CHARACTERS.zero,
+];
+
+export const STORY_CHARACTERS: StoryCharacterDef[] = [
+  {
+    id: 'wanderer',
+    name: 'THE WANDERER',
+    role: 'Playable Survivor & Firearms Expert',
+    faction: 'Independent Quarantine Survivor',
+    accentColor: '#facc15',
+    summary:
+      'Lone survivor who mastered every firearm platform across the fallen megacity. Selectable as a full playable operative with Deadeye Barrage.',
+    dialogueStyle: 'Measured, laconic, battle-tested.',
+  },
+  {
+    id: 'raven_09',
+    name: 'RAVEN-09',
+    role: 'Allied Hacking & Recon Companion Unit',
+    faction: 'Uninfected Pre-Collapse Vanguard AI',
+    accentColor: '#38bdf8',
+    summary:
+      'Autonomous hover-chassis droid immune to the spore pathogen via air-gapped optical cores. Assists operatives by hacking locks, marking infected, and relaying grid diagnostics.',
+    dialogueStyle: 'Crisp synthetic telemetry mixed with dry tactical humor.',
+  },
+  {
+    id: 'vex',
+    name: 'VEX',
+    role: 'Neutral Rooftop Sniper & Info Broker',
+    faction: 'Free Roof-Runners',
+    accentColor: '#a3e635',
+    summary:
+      'Elusive sharp-shooter watching the quarantine streets from collapsed overpasses. Trades encrypted patrol intel and high-caliber ammunition drops to operatives who survive her sectors.',
+    dialogueStyle: 'Wry, watchful, brutally honest.',
+  },
+  {
+    id: 'the_harvester',
+    name: 'THE HARVESTER',
+    role: 'Mutated-Machine Reclamation Boss',
+    faction: 'Corrupted Reclamation Swarm',
+    accentColor: '#f97316',
+    summary:
+      'A towering industrial salvage rig fused with pulsing crimson fungal tendrils and rotary bone-shears that strips alloy and living tissue to feed Chamber Zero.',
+    dialogueStyle: 'Grinding hydraulic shrieks and corrupted PA broadcasts.',
+  },
+  {
+    id: 'dr_zero',
+    name: 'DR. ZERO',
+    role: 'Chief Quarantine Architect & Antagonist',
+    faction: 'HELIOS Black-Site Directorate',
+    accentColor: '#fb7185',
+    summary:
+      'Lead xenometallurgist who weaponized the meteor pathogen inside Sector Zero and locked New Eden behind automated HELIOS kill-gates.',
+    dialogueStyle: 'Clinical, calculating, chillingly detached.',
+  },
 ];
 
 export const WEAPONS: Record<WeaponId, WeaponDef> = {

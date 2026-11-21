@@ -89,6 +89,12 @@ export const GameHud: React.FC<Props> = ({
   const heartbeatVignetteRef = useRef<HTMLDivElement>(null);
   const heartbeatRingRef = useRef<HTMLDivElement>(null);
   const heartIconRef = useRef<HTMLSpanElement>(null);
+  const threatVignetteRef = useRef<HTMLDivElement>(null);
+  const threatEdgeFlashRef = useRef<HTMLDivElement>(null);
+  const threatBannerRef = useRef<HTMLDivElement>(null);
+  const threatBarFillRef = useRef<HTMLDivElement>(null);
+  const smoothedThreatRef = useRef(0);
+  const threatPhaseRef = useRef(0);
 
   const hudRef = useRef(hud);
   hudRef.current = hud;
@@ -97,12 +103,18 @@ export const GameHud: React.FC<Props> = ({
 
   useEffect(() => {
     let rafId = 0;
-    const tick = () => {
+    let lastTs = performance.now();
+
+    const tick = (now: number) => {
+      const frameDt = Math.min(0.05, Math.max(0.001, (now - lastTs) / 1000));
+      lastTs = now;
+
       const h = hudRef.current;
       const intensity = h.heartbeatIntensity;
-      const pulse = reducedMotionRef.current
+      const reduced = reducedMotionRef.current;
+      const pulse = reduced
         ? intensity * 0.35
-        : computeLubDubPulse(performance.now(), h.lastHeartbeatAt, h.heartbeatBpm, intensity);
+        : computeLubDubPulse(now, h.lastHeartbeatAt, h.heartbeatBpm, intensity);
 
       if (heartbeatVignetteRef.current) {
         if (intensity <= 0.1) {
@@ -111,14 +123,14 @@ export const GameHud: React.FC<Props> = ({
           const baseAlpha = Math.max(0, (intensity - 0.14) * 0.24);
           const peakAlpha = pulse * (0.36 + intensity * 0.34);
           const totalOpacity = Math.min(0.82, baseAlpha + peakAlpha);
-          const scale = reducedMotionRef.current ? 1 : 1.035 - pulse * 0.035;
+          const scale = reduced ? 1 : 1.035 - pulse * 0.035;
           heartbeatVignetteRef.current.style.opacity = totalOpacity.toFixed(3);
           heartbeatVignetteRef.current.style.transform = `scale(${scale.toFixed(4)})`;
         }
       }
 
       if (heartbeatRingRef.current) {
-        if (intensity <= 0.22 || reducedMotionRef.current) {
+        if (intensity <= 0.22 || reduced) {
           heartbeatRingRef.current.style.opacity = '0';
         } else {
           const ringOpacity = Math.min(0.42, pulse * intensity * 0.45);
@@ -129,16 +141,73 @@ export const GameHud: React.FC<Props> = ({
       }
 
       if (heartIconRef.current) {
-        const iconPulse = reducedMotionRef.current
+        const iconPulse = reduced
           ? 0
           : computeLubDubPulse(
-              performance.now(),
+              now,
               h.lastHeartbeatAt,
               h.heartbeatBpm,
               Math.max(0.22, intensity)
             );
         const iconScale = 1 + iconPulse * (0.16 + intensity * 0.24);
         heartIconRef.current.style.transform = `scale(${iconScale.toFixed(3)})`;
+      }
+
+      // Smoothly ramp proximity threat intensity in/out for seamless entry & exit fades
+      const targetThreat =
+        h.health > 0 && !h.activePuzzleId ? h.proximityThreatIntensity : 0;
+      const dampSpeed = targetThreat > smoothedThreatRef.current ? 10.5 : 3.4;
+      smoothedThreatRef.current +=
+        (targetThreat - smoothedThreatRef.current) * Math.min(1, frameDt * dampSpeed);
+      if (targetThreat === 0 && smoothedThreatRef.current < 0.008) {
+        smoothedThreatRef.current = 0;
+      }
+
+      const threatLvl = smoothedThreatRef.current;
+      threatPhaseRef.current = (threatPhaseRef.current + frameDt * (1.7 + threatLvl * 3.4)) % 1;
+      const wave = 0.5 + 0.5 * Math.sin(threatPhaseRef.current * Math.PI * 2);
+      const sharpFlash = Math.pow(Math.max(0, Math.sin(threatPhaseRef.current * Math.PI * 2)), 4);
+
+      if (threatVignetteRef.current) {
+        if (threatLvl <= 0.01) {
+          threatVignetteRef.current.style.opacity = '0';
+        } else {
+          const vOpacity = reduced
+            ? threatLvl * 0.42
+            : Math.min(0.74, threatLvl * (0.34 + wave * 0.36));
+          const vScale = reduced ? 1 : 1.02 - wave * 0.02 * threatLvl;
+          threatVignetteRef.current.style.opacity = vOpacity.toFixed(3);
+          threatVignetteRef.current.style.transform = `scale(${vScale.toFixed(4)})`;
+        }
+      }
+
+      if (threatEdgeFlashRef.current) {
+        if (threatLvl <= 0.01 || reduced) {
+          threatEdgeFlashRef.current.style.opacity = '0';
+        } else {
+          const flashOp = Math.min(0.58, sharpFlash * (0.22 + threatLvl * 0.42));
+          threatEdgeFlashRef.current.style.opacity = flashOp.toFixed(3);
+        }
+      }
+
+      if (threatBannerRef.current) {
+        if (threatLvl <= 0.01) {
+          threatBannerRef.current.style.opacity = '0';
+          threatBannerRef.current.style.visibility = 'hidden';
+        } else {
+          threatBannerRef.current.style.visibility = 'visible';
+          const bannerOpacity = reduced
+            ? Math.min(0.95, threatLvl * 1.1)
+            : Math.min(1, (0.58 + wave * 0.42) * Math.min(1, threatLvl * 1.65));
+          const bannerScale = reduced ? 1 : 0.985 + wave * 0.025 * Math.min(1, threatLvl * 1.3);
+          threatBannerRef.current.style.opacity = bannerOpacity.toFixed(3);
+          threatBannerRef.current.style.transform = `translate3d(-50%, 0, 0) scale(${bannerScale.toFixed(4)})`;
+        }
+      }
+
+      if (threatBarFillRef.current) {
+        const barScale = Math.max(0.06, Math.min(1, threatLvl));
+        threatBarFillRef.current.style.transform = `scaleX(${barScale.toFixed(3)})`;
       }
 
       rafId = requestAnimationFrame(tick);
@@ -167,6 +236,96 @@ export const GameHud: React.FC<Props> = ({
           boxShadow: 'inset 0 0 130px 28px rgba(220, 38, 38, 0.72)',
         }}
       />
+      {/* Proximity Threat Warning Pulsating Perimeter Overlay & Edge Flashes */}
+      <div
+        ref={threatVignetteRef}
+        className="fixed inset-0 pointer-events-none will-change-[transform,opacity]"
+        style={{
+          opacity: 0,
+          background:
+            'radial-gradient(ellipse at center, transparent 54%, rgba(127, 29, 29, 0.36) 80%, rgba(153, 27, 27, 0.88) 100%)',
+        }}
+      />
+      <div
+        ref={threatEdgeFlashRef}
+        className="fixed inset-0 pointer-events-none will-change-opacity"
+        style={{
+          opacity: 0,
+          boxShadow: 'inset 0 0 90px 20px rgba(239, 68, 68, 0.78)',
+        }}
+      />
+
+      {/* Prominent Upper-Center Threat Detected Alert (Non-Obstructive) */}
+      <div
+        ref={threatBannerRef}
+        role="status"
+        aria-live="assertive"
+        className={`fixed left-1/2 z-30 pointer-events-none will-change-[transform,opacity] ${
+          hud.boss.active || hud.missionBanner
+            ? 'top-36 sm:top-40'
+            : hud.radioBanner
+              ? 'top-28 sm:top-32'
+              : 'top-20 sm:top-24'
+        }`}
+        style={{
+          opacity: 0,
+          visibility: 'hidden',
+          transform: 'translate3d(-50%, 0, 0)',
+        }}
+      >
+        <div className="relative bg-[#090203]/88 border border-red-600/85 shadow-[0_0_28px_rgba(153,27,27,0.55)] px-6 sm:px-9 py-2.5 text-center backdrop-blur-[2px]">
+          {/* Angular Military-Industrial Corner Brackets */}
+          <span className="absolute -top-0.5 -left-0.5 w-2.5 h-2.5 border-t-2 border-l-2 border-red-400" />
+          <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 border-t-2 border-r-2 border-red-400" />
+          <span className="absolute -bottom-0.5 -left-0.5 w-2.5 h-2.5 border-b-2 border-l-2 border-red-400" />
+          <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 border-b-2 border-r-2 border-red-400" />
+
+          {/* Distressed Hazard Caution Header Strip */}
+          <div
+            className="h-1 w-full mb-1.5 opacity-85"
+            style={{
+              backgroundImage:
+                'repeating-linear-gradient(-45deg, rgba(220,38,38,0.85) 0 6px, rgba(15,4,5,0.95) 6px 12px)',
+            }}
+          />
+
+          <div
+            className={`font-display font-bold tracking-[0.22em] text-red-100 whitespace-nowrap ${
+              settings.largeHudText ? 'text-xl sm:text-3xl' : 'text-lg sm:text-2xl'
+            }`}
+          >
+            ⚠ THREAT DETECTED
+          </div>
+
+          <div className="mt-1 flex items-center justify-center gap-2 text-[11px] font-mono-tech tracking-[0.16em] text-red-300/95 tabular-nums whitespace-nowrap">
+            <span>PROXIMITY &lt; 5.0M</span>
+            {hud.nearestThreatDistance !== null && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="text-red-100 font-semibold">
+                  {hud.nearestThreatDistance.toFixed(1)}M
+                </span>
+              </>
+            )}
+            {hud.proximityThreatCount > 1 && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="text-amber-300 font-semibold">
+                  {hud.proximityThreatCount} HOSTILES
+                </span>
+              </>
+            )}
+          </div>
+
+          <div className="mt-1.5 w-full h-1 bg-black/75 border border-red-900/70 overflow-hidden">
+            <div
+              ref={threatBarFillRef}
+              className="h-full w-full origin-left bg-gradient-to-r from-red-700 via-red-500 to-amber-400 will-change-transform"
+              style={{ transform: 'scaleX(0.3)' }}
+            />
+          </div>
+        </div>
+      </div>
       {/* Sniper Scope Optical Overlay during ADS */}
       {hud.isSniperAds && (
         <div

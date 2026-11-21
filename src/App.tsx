@@ -1108,6 +1108,7 @@ export default function App() {
               engineRef.current?.updateGeneratorChallenge(hud.activePuzzleId, next);
             }
           }}
+          onSkillCheckMiss={() => engineRef.current?.triggerPowerBrownoutDip(1.0)}
           onResolve={(solved) => {
             if (hud.activePuzzleId) {
               engineRef.current?.solvePuzzle(hud.activePuzzleId, solved);

@@ -22,6 +22,7 @@ export class HorrorAudioEngine {
   private bossStepIdx = 0;
   private bossPulseTimer: number | null = null;
   private noiseBuffer: AudioBuffer | null = null;
+  private lastProximityAlertAt = -10;
 
   private masterVol = 0.75;
   private sfxVol = 0.85;
@@ -579,7 +580,18 @@ export class HorrorAudioEngine {
     osc.stop(now + 0.3);
   }
 
-  public playAbility(accent: 'overdrive' | 'shadow' | 'fortress' | 'reboot' | 'pulse'): void {
+  public playAbility(
+    accent:
+      | 'overdrive'
+      | 'shadow'
+      | 'fortress'
+      | 'reboot'
+      | 'pulse'
+      | 'biotic'
+      | 'veil'
+      | 'turret'
+      | 'barrage'
+  ): void {
     this.unlock();
     if (!this.ctx || !this.sfxGain) return;
     const now = this.ctx.currentTime;
@@ -595,6 +607,47 @@ export class HorrorAudioEngine {
       g.connect(this.sfxGain);
       osc.start(now);
       osc.stop(now + 0.66);
+    } else if (accent === 'biotic') {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(420, now);
+      osc.frequency.exponentialRampToValueAtTime(840, now + 0.42);
+      g.gain.setValueAtTime(0.18, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.48);
+      osc.connect(g);
+      g.connect(this.sfxGain);
+      osc.start(now);
+      osc.stop(now + 0.5);
+    } else if (accent === 'veil') {
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(660, now);
+      osc.frequency.exponentialRampToValueAtTime(190, now + 0.36);
+      g.gain.setValueAtTime(0.16, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
+      osc.connect(g);
+      g.connect(this.sfxGain);
+      osc.start(now);
+      osc.stop(now + 0.4);
+    } else if (accent === 'turret') {
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(240, now);
+      osc.frequency.setValueAtTime(480, now + 0.08);
+      osc.frequency.setValueAtTime(720, now + 0.16);
+      g.gain.setValueAtTime(0.14, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+      osc.connect(g);
+      g.connect(this.sfxGain);
+      osc.start(now);
+      osc.stop(now + 0.3);
+    } else if (accent === 'barrage') {
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(340, now);
+      osc.frequency.exponentialRampToValueAtTime(680, now + 0.18);
+      g.gain.setValueAtTime(0.18, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+      osc.connect(g);
+      g.connect(this.sfxGain);
+      osc.start(now);
+      osc.stop(now + 0.27);
     } else {
       osc.type = 'sine';
       const base = accent === 'shadow' ? 320 : accent === 'fortress' ? 160 : 440;
@@ -607,6 +660,120 @@ export class HorrorAudioEngine {
       osc.start(now);
       osc.stop(now + 0.34);
     }
+  }
+
+  public playVoiceCadence(
+    pitchHz: number,
+    timbre: 'gravel' | 'calm' | 'heavy' | 'synthetic' | 'clinical' | 'whisper' | 'raspy',
+    syllables = 4
+  ): void {
+    this.unlock();
+    if (!this.ctx || !this.sfxGain || this.ctx.state !== 'running') return;
+    const now = this.ctx.currentTime;
+    const count = Math.max(2, Math.min(6, syllables));
+    for (let i = 0; i < count; i++) {
+      const t = now + i * 0.085;
+      const osc = this.ctx.createOscillator();
+      const bp = this.ctx.createBiquadFilter();
+      const g = this.ctx.createGain();
+      osc.type =
+        timbre === 'synthetic'
+          ? 'square'
+          : timbre === 'calm' || timbre === 'clinical'
+            ? 'triangle'
+            : timbre === 'whisper'
+              ? 'sine'
+              : 'sawtooth';
+      const mod = 1 + ((i % 2 === 0 ? 1 : -1) * 0.06);
+      osc.frequency.setValueAtTime(pitchHz * mod, t);
+      osc.frequency.exponentialRampToValueAtTime(pitchHz * 0.9, t + 0.068);
+      bp.type = 'bandpass';
+      bp.frequency.value = timbre === 'whisper' ? 2100 : timbre === 'heavy' ? 480 : 1150;
+      bp.Q.value = timbre === 'synthetic' ? 3.2 : 1.6;
+      const peak = timbre === 'whisper' ? 0.032 : 0.055;
+      g.gain.setValueAtTime(0.001, t);
+      g.gain.linearRampToValueAtTime(peak, t + 0.014);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.072);
+      osc.connect(bp);
+      bp.connect(g);
+      g.connect(this.sfxGain);
+      osc.start(t);
+      osc.stop(t + 0.08);
+    }
+  }
+
+  public playTurretShot(): void {
+    if (!this.ctx || !this.sfxGain || this.ctx.state !== 'running') return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(760, now);
+    osc.frequency.exponentialRampToValueAtTime(125, now + 0.07);
+    g.gain.setValueAtTime(0.11, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+    osc.connect(g);
+    g.connect(this.sfxGain);
+    osc.start(now);
+    osc.stop(now + 0.09);
+  }
+
+  public playMedicHeal(): void {
+    this.unlock();
+    if (!this.ctx || !this.sfxGain) return;
+    const now = this.ctx.currentTime;
+    [520, 680, 880].forEach((freq, i) => {
+      if (!this.ctx || !this.sfxGain) return;
+      const t = now + i * 0.07;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.08, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+      osc.connect(g);
+      g.connect(this.sfxGain);
+      osc.start(t);
+      osc.stop(t + 0.17);
+    });
+  }
+
+  public playVault(): void {
+    this.unlock();
+    if (!this.ctx || !this.sfxGain) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(140, now);
+    osc.frequency.exponentialRampToValueAtTime(82, now + 0.16);
+    g.gain.setValueAtTime(0.12, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    osc.connect(g);
+    g.connect(this.sfxGain);
+    osc.start(now);
+    osc.stop(now + 0.2);
+  }
+
+  public playOperativeIntroCue(charId: string): void {
+    this.unlock();
+    if (!this.ctx || !this.sfxGain) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    const isHeavy = charId === 'titan' || charId === 'brute';
+    const isStealth = charId === 'phantom' || charId === 'ghost';
+    const isTech = charId === 'engineer' || charId === 'nyx' || charId === 'patch';
+    osc.type = isTech ? 'triangle' : isHeavy ? 'sawtooth' : 'sine';
+    osc.frequency.setValueAtTime(isHeavy ? 62 : isStealth ? 148 : isTech ? 220 : 96, now);
+    osc.frequency.exponentialRampToValueAtTime(isHeavy ? 42 : isStealth ? 92 : 128, now + 1.4);
+    g.gain.setValueAtTime(0.001, now);
+    g.gain.linearRampToValueAtTime(0.16, now + 0.25);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 1.5);
+    osc.connect(g);
+    g.connect(this.sfxGain);
+    osc.start(now);
+    osc.stop(now + 1.55);
   }
 
   public playRadioStatic(): void {
@@ -2426,6 +2593,59 @@ export class HorrorAudioEngine {
       hp.connect(ng);
       ng.connect(this.sfxGain);
       noise.start(now, Math.random() * 0.4, 0.005);
+    }
+  }
+
+  public playProximityThreatAlert(intensity: number, nearbyCount = 1): void {
+    if (!this.ctx || !this.sfxGain || this.ctx.state !== 'running') return;
+    const now = this.ctx.currentTime;
+    // Prevent duplicate or overlapping warning tones
+    if (now - this.lastProximityAlertAt < 0.42) return;
+    this.lastProximityAlertAt = now;
+
+    const clamped = Math.max(0.1, Math.min(1, intensity));
+    const multiBoost = nearbyCount > 1 ? Math.min(0.35, (nearbyCount - 1) * 0.14) : 0;
+
+    const triggerChirp = (offsetSec: number, startHz: number, endHz: number, gainPeak: number) => {
+      if (!this.ctx || !this.sfxGain) return;
+      const t = now + offsetSec;
+      const osc = this.ctx.createOscillator();
+      const sub = this.ctx.createOscillator();
+      const bp = this.ctx.createBiquadFilter();
+      const g = this.ctx.createGain();
+
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(startHz, t);
+      osc.frequency.exponentialRampToValueAtTime(endHz, t + 0.085);
+
+      sub.type = 'sine';
+      sub.frequency.setValueAtTime(startHz * 0.5, t);
+      sub.frequency.exponentialRampToValueAtTime(endHz * 0.5, t + 0.085);
+
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(1180 + clamped * 320, t);
+      bp.Q.setValueAtTime(2.2, t);
+
+      g.gain.setValueAtTime(0.0006, t);
+      g.gain.linearRampToValueAtTime(gainPeak, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0006, t + 0.095);
+
+      osc.connect(bp);
+      sub.connect(bp);
+      bp.connect(g);
+      g.connect(this.sfxGain);
+
+      osc.start(t);
+      sub.start(t);
+      osc.stop(t + 0.105);
+      sub.stop(t + 0.105);
+    };
+
+    const baseHz = 470 + clamped * 210 + multiBoost * 75;
+    const gain = 0.036 + clamped * 0.048 + multiBoost * 0.018;
+    triggerChirp(0, baseHz, baseHz * 0.84, gain);
+    if (clamped >= 0.48 || nearbyCount > 1) {
+      triggerChirp(0.11, baseHz * 1.12, baseHz * 0.92, gain * 0.72);
     }
   }
 

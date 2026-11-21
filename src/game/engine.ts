@@ -298,6 +298,15 @@ interface ImpactParticle {
   mesh: THREE.Mesh;
   velocity: THREE.Vector3;
   life: number;
+  maxLife?: number;
+  isBlood?: boolean;
+}
+
+interface BloodPoolDecal {
+  mesh: THREE.Mesh;
+  mat: THREE.MeshStandardMaterial;
+  age: number;
+  maxScale: number;
 }
 
 interface TracerBeam {
@@ -399,9 +408,11 @@ export class FirstPersonGameEngine {
   private enemiesDefeated = 0;
   private elapsedSeconds = 0;
 
-  // Flashlight
+  // Flashlight (Gun-Mounted SpotLight + Soft Surrounding Spill Light)
   private flashlight!: THREE.SpotLight;
   private flashlightTarget!: THREE.Object3D;
+  private flashlightSpill!: THREE.PointLight;
+  private flashlightAttachedToCam = false;
   private flashlightOn = true;
   private flashlightBattery = 100;
 
@@ -498,6 +509,10 @@ export class FirstPersonGameEngine {
   private heartbeatPulse = 0;
   private lastHeartbeatAt = 0;
   private nearestThreatDistance: number | null = null;
+  private proximityThreatDetected = false;
+  private proximityThreatIntensity = 0;
+  private proximityThreatCount = 0;
+  private proximityAlertTimer = 0;
   private bodyCondition: BodyCondition = { head: 100, torso: 100, arms: 100, legs: 100 };
   private touchCrouch = false;
   private touchSprint = false;
@@ -515,15 +530,35 @@ export class FirstPersonGameEngine {
   private enemies: EnemyEntity[] = [];
   private projectiles: Projectile[] = [];
   private particles: ImpactParticle[] = [];
+  private bloodPools: BloodPoolDecal[] = [];
   private tracers: TracerBeam[] = [];
   private shockwaves: ShockwaveEffect[] = [];
   private sharedParticleGeo = new THREE.BoxGeometry(0.08, 0.08, 0.08);
+  private sharedBloodGeo = new THREE.SphereGeometry(0.052, 6, 5);
+  private bloodPoolGeo = new THREE.PlaneGeometry(1, 1);
   private sharedProjectileGeo = new THREE.SphereGeometry(0.18, 8, 8);
   private fireSystem!: VolumetricFireSystem;
   private volumetricFog!: DynamicVolumetricFog;
   private worldHemiLights: THREE.HemisphereLight[] = [];
   private worldDirLights: THREE.DirectionalLight[] = [];
   private worldPointLights: THREE.PointLight[] = [];
+  private worldDirBaseIntensities: number[] = [];
+  private worldHemiBaseIntensities: number[] = [];
+  private gridRoomLights: {
+    light: THREE.PointLight;
+    baseIntensity: number;
+    baseColor: THREE.Color;
+    phase: number;
+    speed: number;
+  }[] = [];
+  private infectedGlowLights: THREE.PointLight[] = [];
+  private readonly tmpCrimsonColor = new THREE.Color(0xdc2626);
+  private readonly tmpEmberColor = new THREE.Color(0xea580c);
+  private readonly tmpBrownoutColor = new THREE.Color(0xff9c52);
+  private powerDipTimer = 0;
+  private powerDipStrength = 0;
+  private lastBrownoutSfxTime = -10;
+  private hadFullPower = false;
   private baseFogDensity = 0.018;
   private baseFogColor = new THREE.Color(0x07090e);
   private currentLightLevel = 0.45;
@@ -665,16 +700,18 @@ export class FirstPersonGameEngine {
 
     this.textures = createProceduralTextures(this.renderer);
 
-    // Setup Flashlight attached to camera rig
-    this.flashlight = new THREE.SpotLight(0xfff4e0, 4.6, 44, Math.PI / 5.2, 0.45, 1.5);
-    this.flashlight.position.set(0.18, -0.1, -0.1);
+    // Setup Gun-Mounted Flashlight + Soft Surrounding Spill Light
+    this.flashlight = new THREE.SpotLight(0xfff6e8, 9.2, 62, Math.PI / 4.2, 0.58, 1.35);
     this.flashlight.castShadow = !this.isSoftwareGl;
     this.flashlight.shadow.mapSize.set(512, 512);
+    this.flashlight.shadow.bias = -0.0005;
+    this.flashlight.shadow.normalBias = 0.02;
     this.flashlightTarget = new THREE.Object3D();
-    this.flashlightTarget.position.set(0, -0.05, -10);
-    this.camera.add(this.flashlight);
-    this.camera.add(this.flashlightTarget);
     this.flashlight.target = this.flashlightTarget;
+
+    this.flashlightSpill = new THREE.PointLight(0xffdcb8, 2.4, 13.5, 1.65);
+    this.flashlightSpill.position.set(0.08, -0.08, -0.35);
+    this.camera.add(this.flashlightSpill);
 
     // Build first-person weapon rigs attached to camera
     const primRig = buildFirstPersonRig(characterId, primId, this.textures);
@@ -683,6 +720,15 @@ export class FirstPersonGameEngine {
     this.camera.add(primRig.root);
     this.camera.add(secRig.root);
     this.fpRigs = [primRig, secRig];
+    this.attachFlashlightToActiveRig(false);
+
+    // Pooled dynamic rim lights for nearest living infected monsters
+    for (let i = 0; i < 3; i++) {
+      const glow = new THREE.PointLight(0xdc2626, 0, 11.5, 1.65);
+      glow.name = '__infectedGlow';
+      this.scene.add(glow);
+      this.infectedGlowLights.push(glow);
+    }
 
     // Build Mission World for all 12 campaign chapters + bonus Crucible arena
     this.buildSelectedWorld(introMode, restoreSave);
@@ -1382,14 +1428,47 @@ export class FirstPersonGameEngine {
     this.volumetricFog?.setQualityPreset(q, this.isSoftwareGl);
   }
 
+  private attachFlashlightToActiveRig(forceCamFallback = false): void {
+    if (!this.flashlight || !this.flashlightTarget) return;
+    const rig = this.fpRigs?.[this.activeSlot];
+    if (!rig || forceCamFallback) {
+      if (this.flashlight.parent !== this.camera) {
+        this.camera.add(this.flashlight);
+        this.camera.add(this.flashlightTarget);
+      }
+      this.flashlight.position.set(0.14, -0.1, -0.2);
+      this.flashlightTarget.position.set(0, -0.05, -12);
+      this.flashlightAttachedToCam = true;
+      return;
+    }
+    if (this.flashlight.parent !== rig.weaponPivot) {
+      rig.weaponPivot.add(this.flashlight);
+      rig.weaponPivot.add(this.flashlightTarget);
+    }
+    this.flashlight.position.copy(rig.flashlightMountPos);
+    this.flashlightTarget.position.set(
+      rig.flashlightMountPos.x,
+      rig.flashlightMountPos.y - 0.04,
+      rig.flashlightMountPos.z - 12
+    );
+    this.flashlightAttachedToCam = false;
+  }
+
   private initDynamicVolumetricFog(): void {
     this.worldHemiLights = [];
     this.worldDirLights = [];
     this.worldPointLights = [];
+    this.worldDirBaseIntensities = [];
+    this.worldHemiBaseIntensities = [];
+    this.gridRoomLights = [];
+
+    const flickerLightSet = new Set(this.world.flickerLights.map((fl) => fl.light));
+    const infectedGlowSet = new Set(this.infectedGlowLights);
 
     this.scene.traverse((obj) => {
-      if (obj === this.flashlight) return;
-      // Skip lights attached to the player camera (flashlight / weapon muzzle flashes)
+      if (obj === this.flashlight || obj === this.flashlightSpill) return;
+      if (obj instanceof THREE.PointLight && infectedGlowSet.has(obj)) return;
+      // Skip lights attached to the player camera (gun flashlight / spill / weapon muzzle flashes)
       let p: THREE.Object3D | null = obj.parent;
       while (p) {
         if (p === this.camera) return;
@@ -1397,10 +1476,35 @@ export class FirstPersonGameEngine {
       }
       if (obj instanceof THREE.HemisphereLight) {
         this.worldHemiLights.push(obj);
+        this.worldHemiBaseIntensities.push(obj.intensity);
       } else if (obj instanceof THREE.DirectionalLight) {
         this.worldDirLights.push(obj);
+        this.worldDirBaseIntensities.push(obj.intensity);
       } else if (obj instanceof THREE.PointLight) {
         this.worldPointLights.push(obj);
+
+        // Identify grid-powered room/facility lights vs fire/lava/existing broken flicker lights
+        if (!flickerLightSet.has(obj)) {
+          obj.getWorldPosition(this.tmpLightPos);
+          let nearFire = false;
+          for (let f = 0; f < this.world.fireEmitters.length; f++) {
+            if (this.world.fireEmitters[f].position.distanceToSquared(this.tmpLightPos) < 6.25) {
+              nearFire = true;
+              break;
+            }
+          }
+          const isFireOrange =
+            obj.color.r > 0.85 && obj.color.g < 0.48 && obj.color.b < 0.2;
+          if (!nearFire && !isFireOrange && obj.intensity > 0.12) {
+            this.gridRoomLights.push({
+              light: obj,
+              baseIntensity: obj.intensity,
+              baseColor: obj.color.clone(),
+              phase: this.gridRoomLights.length * 1.37 + (this.tmpLightPos.x + this.tmpLightPos.z) * 0.19,
+              speed: 7.5 + (this.gridRoomLights.length % 5) * 2.1,
+            });
+          }
+        }
       }
     });
 
@@ -1420,6 +1524,146 @@ export class FirstPersonGameEngine {
     );
     this.currentLightLevel = this.sampleLocalLightLevel();
     this.currentDarknessFactor = THREE.MathUtils.clamp(1.0 - this.currentLightLevel, 0.0, 1.0);
+  }
+
+  private getGeneratorChargeNormalized(): number {
+    if (this.powerRestored || this.solvedPuzzles.size > 0 || this.missionId === 'mission_crucible') {
+      return 1.0;
+    }
+    const hasPuzzle = this.world.interactables.some((i) => i.kind === 'puzzle');
+    if (!hasPuzzle) return 1.0;
+
+    let bestCharge = 0;
+    this.generatorChallenges.forEach((ch) => {
+      const mathFrac = ch.completed ? 1.0 : Math.min(1.0, ch.currentIndex / 10);
+      const circuitFrac = Math.min(1.0, (ch.stabilizationPct ?? 0) / 100);
+      const combined = THREE.MathUtils.clamp(mathFrac * 0.55 + circuitFrac * 0.44, 0.0, 0.99);
+      if (combined > bestCharge) bestCharge = combined;
+    });
+    return bestCharge;
+  }
+
+  public triggerPowerBrownoutDip(severity = 1.0): void {
+    this.powerDipTimer = 0.85;
+    this.powerDipStrength = THREE.MathUtils.clamp(severity, 0.2, 1.2);
+  }
+
+  private updateFluctuatingPower(dt: number): void {
+    const charge = this.getGeneratorChargeNormalized();
+    if (this.powerDipTimer > 0) {
+      this.powerDipTimer = Math.max(0, this.powerDipTimer - dt);
+    }
+    const dipExtra =
+      this.powerDipTimer > 0 ? this.powerDipStrength * (this.powerDipTimer / 0.85) * 0.65 : 0;
+
+    if (charge >= 1.0 && dipExtra <= 0.01) {
+      if (!this.hadFullPower) {
+        this.hadFullPower = true;
+        if (this.elapsedSeconds > 1.0) {
+          this.audio.playClick(true);
+        }
+      }
+      for (let i = 0; i < this.gridRoomLights.length; i++) {
+        const entry = this.gridRoomLights[i];
+        entry.light.intensity = THREE.MathUtils.damp(entry.light.intensity, entry.baseIntensity, 6, dt);
+        entry.light.color.lerp(entry.baseColor, Math.min(1, dt * 6));
+      }
+      for (let i = 0; i < this.worldDirLights.length; i++) {
+        this.worldDirLights[i].intensity = THREE.MathUtils.damp(
+          this.worldDirLights[i].intensity,
+          this.worldDirBaseIntensities[i] ?? this.worldDirLights[i].intensity,
+          6,
+          dt
+        );
+      }
+      for (let i = 0; i < this.worldHemiLights.length; i++) {
+        this.worldHemiLights[i].intensity = THREE.MathUtils.damp(
+          this.worldHemiLights[i].intensity,
+          this.worldHemiBaseIntensities[i] ?? this.worldHemiLights[i].intensity,
+          6,
+          dt
+        );
+      }
+      return;
+    }
+
+    this.hadFullPower = false;
+    const instability = THREE.MathUtils.clamp(1.0 - charge * 0.65, 0.25, 1.0);
+    const reduced = Boolean(this.settings.reducedMotion);
+
+    // Facility-wide brownout wave periodically sags power across rooms
+    const sagWave =
+      Math.sin(this.elapsedSeconds * (reduced ? 0.55 : 0.92)) +
+      0.55 * Math.sin(this.elapsedSeconds * (reduced ? 1.1 : 2.25) + 1.3);
+    const globalSag = sagWave < -0.68 ? THREE.MathUtils.clamp((-0.68 - sagWave) * 0.95, 0, 0.65) : 0;
+
+    if (
+      !reduced &&
+      globalSag > 0.36 &&
+      !this.paused &&
+      this.elapsedSeconds - this.lastBrownoutSfxTime > 6.8
+    ) {
+      this.lastBrownoutSfxTime = this.elapsedSeconds;
+      this.audio.playLabFlicker();
+    }
+
+    for (let i = 0; i < this.gridRoomLights.length; i++) {
+      const entry = this.gridRoomLights[i];
+      if (entry.light.position.distanceToSquared(this.playerPos) > 4225) continue;
+
+      const wave = 0.5 + 0.5 * Math.sin(this.elapsedSeconds * (1.2 + charge * 0.6) + entry.phase);
+      let sputter = 0;
+      if (!reduced) {
+        const hi = Math.sin(this.elapsedSeconds * entry.speed + entry.phase * 2.3);
+        const hi2 = Math.sin(this.elapsedSeconds * (entry.speed * 2.13) + entry.phase);
+        if (hi > 0.72 && hi2 > 0.15) {
+          sputter = 0.52 * instability;
+        }
+      }
+
+      const slowDim = (1.0 - wave) * 0.28 * instability;
+      const sagAmount = THREE.MathUtils.clamp(
+        slowDim + globalSag * instability * (reduced ? 0.45 : 0.95) + sputter + dipExtra,
+        0,
+        0.78
+      );
+      const targetIntensity = entry.baseIntensity * (1.0 - sagAmount);
+      entry.light.intensity = THREE.MathUtils.damp(
+        entry.light.intensity,
+        targetIntensity,
+        reduced ? 4 : 18,
+        dt
+      );
+      entry.light.color.copy(entry.baseColor).lerp(this.tmpBrownoutColor, sagAmount * 0.42);
+    }
+
+    const skyMult = THREE.MathUtils.clamp(
+      1.0 - (globalSag * 0.28 * instability + dipExtra * 0.28),
+      0.66,
+      1.0
+    );
+    for (let i = 0; i < this.worldDirLights.length; i++) {
+      const base = this.worldDirBaseIntensities[i];
+      if (base !== undefined) {
+        this.worldDirLights[i].intensity = THREE.MathUtils.damp(
+          this.worldDirLights[i].intensity,
+          base * skyMult,
+          6,
+          dt
+        );
+      }
+    }
+    for (let i = 0; i < this.worldHemiLights.length; i++) {
+      const base = this.worldHemiBaseIntensities[i];
+      if (base !== undefined) {
+        this.worldHemiLights[i].intensity = THREE.MathUtils.damp(
+          this.worldHemiLights[i].intensity,
+          base * skyMult,
+          6,
+          dt
+        );
+      }
+    }
   }
 
   private sampleLocalLightLevel(): number {
@@ -1471,9 +1715,9 @@ export class FirstPersonGameEngine {
 
     const flashlightPower =
       this.flashlightOn && this.flashlightBattery > 0
-        ? this.flashlight.intensity / 4.6
+        ? THREE.MathUtils.clamp(this.flashlight.intensity / 9.2, 0.0, 1.0)
         : 0;
-    const flashlightContrib = flashlightPower * 0.22;
+    const flashlightContrib = flashlightPower * 0.3;
 
     return THREE.MathUtils.clamp(skyContrib + Math.min(0.68, pointContrib) + flashlightContrib, 0.0, 1.0);
   }
@@ -1497,10 +1741,17 @@ export class FirstPersonGameEngine {
       this.tmpFogColor.copy(this.baseFogColor);
     }
 
-    this.camera.getWorldDirection(this.tmpFlashDir);
+    this.flashlight.getWorldPosition(_vec3A);
+    this.flashlightTarget.getWorldPosition(_vec3B);
+    this.tmpFlashDir.copy(_vec3B).sub(_vec3A);
+    if (this.tmpFlashDir.lengthSq() > 0.0001) {
+      this.tmpFlashDir.normalize();
+    } else {
+      this.camera.getWorldDirection(this.tmpFlashDir);
+    }
     const flashlightPower =
       this.flashlightOn && this.flashlightBattery > 0
-        ? THREE.MathUtils.clamp(this.flashlight.intensity / 4.6, 0.0, 1.0)
+        ? THREE.MathUtils.clamp(this.flashlight.intensity / 9.2, 0.0, 1.0)
         : 0;
 
     this.volumetricFog.update(
@@ -1509,7 +1760,7 @@ export class FirstPersonGameEngine {
       this.playerPos,
       this.currentDarknessFactor,
       this.tmpFogColor,
-      this.camera.position,
+      _vec3A,
       this.tmpFlashDir,
       flashlightPower
     );
@@ -1671,12 +1922,17 @@ export class FirstPersonGameEngine {
         reserveAmmo: Math.floor(secDef.reserveMax * 0.8),
       };
       if (this.fpRigs) {
+        if (this.flashlight.parent === this.fpRigs[1].weaponPivot) {
+          this.camera.add(this.flashlight);
+          this.camera.add(this.flashlightTarget);
+        }
         this.camera.remove(this.fpRigs[1].root);
         this.disposeObject3D(this.fpRigs[1].root);
         const newRig = buildFirstPersonRig(this.characterId, newSecId, this.textures);
         newRig.root.visible = this.activeSlot === 1;
         this.camera.add(newRig.root);
         this.fpRigs[1] = newRig;
+        this.attachFlashlightToActiveRig(false);
       }
     } else {
       this.weaponStates[1].reserveAmmo = Math.max(
@@ -2071,6 +2327,7 @@ export class FirstPersonGameEngine {
     if (this.fpRigs) {
       this.fpRigs[0].root.visible = slot === 0;
       this.fpRigs[1].root.visible = slot === 1;
+      this.attachFlashlightToActiveRig(false);
     }
     this.audio.playClick(false);
     this.pushHud(true);
@@ -2457,10 +2714,24 @@ export class FirstPersonGameEngine {
     triggerMonsterStagger(enemy.anim, zone, lateralOffset, isCrit || finalDmg > 25);
     enemy.hurtTwitchTimer = isCrit ? 0.55 : 0.35;
     enemy.health = Math.max(0, enemy.health - finalDmg);
-    enemy.hitFlashTimer = 0.1;
+    enemy.hitFlashTimer = 0.11;
     this.hitMarkerTimer = 0.16;
     this.hitMarkerCrit = isCrit;
     this.audio.playHitMarker(isCrit);
+
+    // Blood spray droplets + persistent floor blood pools on creature hits
+    const isArmoredHit = zone === 'armor' || zone === 'arm_armor' || zone === 'chest_armor';
+    if (!isArmoredHit) {
+      this.spawnBloodSpray(hitPoint, enemy.position, isCrit || finalDmg > 25, isCrit ? 14 : 9);
+      if (isCrit || finalDmg >= 20 || Math.random() < 0.45) {
+        this.spawnBloodPool(
+          hitPoint.x + (Math.random() - 0.5) * 0.6,
+          hitPoint.z + (Math.random() - 0.5) * 0.6,
+          enemy.position.y,
+          (isCrit ? 1.25 : 0.9) + Math.random() * 0.45
+        );
+      }
+    }
 
     if (enemy.health > 0) {
       const distDmg = enemy.position.distanceTo(this.camera.position);
@@ -2582,6 +2853,13 @@ export class FirstPersonGameEngine {
       const dzK = enemy.position.z - this.camera.position.z;
       const panK = THREE.MathUtils.clamp((dxK * Math.cos(this.playerYaw) - dzK * Math.sin(this.playerYaw)) / (distKill || 1), -1, 1);
       this.spawnImpactParticles(hitPoint, 0xdc2626, 16);
+      this.spawnBloodSpray(hitPoint, enemy.position, true, 16);
+      this.spawnBloodPool(
+        enemy.position.x + (Math.random() - 0.5) * 0.35,
+        enemy.position.z + (Math.random() - 0.5) * 0.35,
+        enemy.position.y,
+        enemy.isBoss ? 3.2 : 1.75 + Math.random() * 0.55
+      );
       this.audio.playMonsterVocal(enemy.type, 'death', distKill, panK, 0, enemy.position.y - this.playerPos.y);
       if (enemy.type === 'titanforged') {
         this.audio.playTitanMechShutdown(distKill, panK);
@@ -2685,6 +2963,94 @@ export class FirstPersonGameEngine {
         life: 0.45 + Math.random() * 0.25,
       });
     }
+  }
+
+  private spawnBloodSpray(
+    origin: THREE.Vector3,
+    enemyPos: THREE.Vector3,
+    heavy: boolean,
+    count: number
+  ): void {
+    const mat = new THREE.MeshBasicMaterial({ color: heavy ? 0xdc2626 : 0x991b1b });
+    mat.userData.activeParticles = count;
+    const outX = origin.x - enemyPos.x;
+    const outZ = origin.z - enemyPos.z;
+    const outLen = Math.hypot(outX, outZ) || 1;
+    const nx = outX / outLen;
+    const nz = outZ / outLen;
+
+    for (let i = 0; i < count; i++) {
+      const mesh = new THREE.Mesh(this.sharedBloodGeo, mat);
+      const scale = (heavy ? 0.85 : 0.65) + Math.random() * 0.9;
+      mesh.scale.set(scale, scale * 1.15, scale);
+      mesh.position.copy(origin);
+      this.scene.add(mesh);
+      const speed = (heavy ? 4.8 : 3.2) + Math.random() * 3.8;
+      this.particles.push({
+        mesh,
+        velocity: new THREE.Vector3(
+          nx * speed + (Math.random() - 0.5) * 3.6,
+          1.2 + Math.random() * (heavy ? 4.4 : 3.1),
+          nz * speed + (Math.random() - 0.5) * 3.6
+        ),
+        life: 0.42 + Math.random() * 0.35,
+        maxLife: 0.77,
+        isBlood: true,
+      });
+    }
+  }
+
+  private spawnBloodPool(x: number, z: number, hintY: number, targetScale: number): void {
+    const MAX_BLOOD_POOLS = 42;
+    if (this.bloodPools.length >= MAX_BLOOD_POOLS) {
+      const oldest = this.bloodPools.shift();
+      if (oldest) {
+        this.scene.remove(oldest.mesh);
+        oldest.mat.dispose();
+      }
+    }
+
+    const sample = sampleFloorHeight(this.world.ramps, x, z, hintY, 0.55);
+    const floorY =
+      sample.ramp !== null
+        ? sample.y
+        : this.missionId === 'mission_01' && Math.abs(x) < 2.0 && z > 33.8 && z < 42.0
+          ? 0.25
+          : 0;
+
+    const mat = new THREE.MeshStandardMaterial({
+      map: this.textures.bloodDecalMap,
+      color: 0x7f1d1d,
+      emissive: 0x450a0a,
+      emissiveIntensity: 0.24,
+      roughness: 0.16,
+      metalness: 0.04,
+      transparent: true,
+      opacity: 0.92,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+
+    const mesh = new THREE.Mesh(this.bloodPoolGeo, mat);
+    mesh.position.set(x, floorY + 0.024, z);
+    mesh.rotation.order = 'YXZ';
+    mesh.rotation.set(
+      -Math.PI / 2 + Math.atan(sample.slopeZ),
+      Math.random() * Math.PI * 2,
+      -Math.atan(sample.slopeX)
+    );
+    const startScale = targetScale * 0.32;
+    mesh.scale.set(startScale, startScale, 1);
+    this.scene.add(mesh);
+
+    this.bloodPools.push({
+      mesh,
+      mat,
+      age: 0,
+      maxScale: targetScale,
+    });
   }
 
   private spawnTracerBeam(start: THREE.Vector3, end: THREE.Vector3, color: number): void {
@@ -3848,13 +4214,24 @@ export class FirstPersonGameEngine {
       this.camera.updateProjectionMatrix();
     }
 
-    // Update Flashlight
+    // Update Gun-Mounted Flashlight + Soft Surrounding Spill Light
     if (this.flashlightOn && this.flashlightBattery > 0) {
-      this.flashlightBattery = Math.max(0, this.flashlightBattery - 0.65 * dt);
-      const lowFlicker = this.flashlightBattery < 15 && Math.sin(this.elapsedSeconds * 28) > 0.65 ? 0.4 : 1;
-      this.flashlight.intensity = 4.6 * lowFlicker;
+      this.flashlightBattery = Math.max(0, this.flashlightBattery - 0.5 * dt);
+      const lowFlicker =
+        this.flashlightBattery < 15 && Math.sin(this.elapsedSeconds * 28) > 0.65 ? 0.42 : 1.0;
+      this.flashlight.intensity = 9.2 * lowFlicker;
+      this.flashlightSpill.intensity = 2.4 * lowFlicker;
+      if (this.fpRigs) {
+        this.fpRigs[this.activeSlot].flashlightLensMat.emissiveIntensity = 1.65 * lowFlicker;
+        this.fpRigs[1 - this.activeSlot].flashlightLensMat.emissiveIntensity = 0.05;
+      }
     } else {
       this.flashlight.intensity = 0;
+      this.flashlightSpill.intensity = 0;
+      if (this.fpRigs) {
+        this.fpRigs[0].flashlightLensMat.emissiveIntensity = 0.04;
+        this.fpRigs[1].flashlightLensMat.emissiveIntensity = 0.04;
+      }
     }
 
     this.updateFirstPersonRig(dt, horizSpeed, isSprinting);
@@ -3926,6 +4303,11 @@ export class FirstPersonGameEngine {
     const wDef = this.getActiveWeaponDef();
     const sniperAds = wDef.id === 'sniper_rifle' && this.mouseDownRight && !this.isReloading;
     rig.root.visible = !sniperAds;
+    if (sniperAds && !this.flashlightAttachedToCam) {
+      this.attachFlashlightToActiveRig(true);
+    } else if (!sniperAds && this.flashlightAttachedToCam) {
+      this.attachFlashlightToActiveRig(false);
+    }
   }
 
   private updateEnemies(dt: number): void {
@@ -3997,6 +4379,56 @@ export class FirstPersonGameEngine {
 
     const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
 
+    // Select up to 3 nearest living enemies for pooled bioluminescent crimson/ember glow
+    let g0: EnemyEntity | null = null;
+    let g1: EnemyEntity | null = null;
+    let g2: EnemyEntity | null = null;
+    let d0 = 784; // 28m^2
+    let d1 = 784;
+    let d2 = 784;
+    for (let i = 0; i < this.enemies.length; i++) {
+      const e = this.enemies[i];
+      if (!e.active || e.state === 'DEAD' || e.huskCollapsed) continue;
+      const dSq = e.position.distanceToSquared(this.playerPos);
+      if (dSq >= d2) continue;
+      if (dSq < d0) {
+        g2 = g1;
+        d2 = d1;
+        g1 = g0;
+        d1 = d0;
+        g0 = e;
+        d0 = dSq;
+      } else if (dSq < d1) {
+        g2 = g1;
+        d2 = d1;
+        g1 = e;
+        d1 = dSq;
+      } else {
+        g2 = e;
+        d2 = dSq;
+      }
+    }
+    const glowTargets = [g0, g1, g2];
+    const glowDistsSq = [d0, d1, d2];
+    for (let idx = 0; idx < this.infectedGlowLights.length; idx++) {
+      const gl = this.infectedGlowLights[idx];
+      const tgt = glowTargets[idx];
+      if (!tgt) {
+        gl.intensity = 0;
+        continue;
+      }
+      const dist = Math.sqrt(glowDistsSq[idx]);
+      const fade = THREE.MathUtils.clamp(1.0 - (dist - 18) / 10, 0.0, 1.0);
+      const alertBoost = tgt.state === 'CHASE' || tgt.state === 'ATTACK' ? 1.35 : 1.0;
+      const hurtBoost = tgt.hurtTwitchTimer > 0 ? 1.25 : 0;
+      const pulse = 0.84 + 0.16 * Math.sin(this.elapsedSeconds * 5.2 + tgt.position.x + idx);
+      const baseInt = tgt.isBoss ? 3.2 : 1.75;
+      gl.position.set(tgt.position.x, tgt.position.y + (tgt.isBoss ? 2.4 : 1.15), tgt.position.z);
+      gl.intensity = (baseInt * alertBoost + hurtBoost) * pulse * fade;
+      const colorMix = 0.5 + 0.5 * Math.sin(this.elapsedSeconds * 2.8 + idx * 1.7);
+      gl.color.copy(this.tmpCrimsonColor).lerp(this.tmpEmberColor, colorMix);
+    }
+
     for (const enemy of this.enemies) {
       if (!enemy.active) continue;
 
@@ -4006,17 +4438,18 @@ export class FirstPersonGameEngine {
       if (enemy.hitFlashTimer > 0) {
         enemy.hitFlashTimer = Math.max(0, enemy.hitFlashTimer - simDt);
         const flashOn = enemy.hitFlashTimer > 0 && enemy.state !== 'DEAD' && !enemy.huskCollapsed;
+        const brightPhase = enemy.hitFlashTimer > 0.06;
         enemy.refs.flashMaterials?.forEach((m, idx) => {
           const base = enemy.refs.flashBaseEmissives?.[idx];
           if (flashOn) {
-            m.emissive.setHex(0xffffff);
-            m.emissiveIntensity = 0.45;
+            m.emissive.setHex(brightPhase ? 0xff4444 : 0xdc2626);
+            m.emissiveIntensity = brightPhase ? 1.45 : 0.95;
           } else if (base) {
             m.emissive.setHex(base.hex);
             m.emissiveIntensity = base.intensity;
           } else {
-            m.emissive.setHex(idx === 2 ? 0x7f1d1d : 0x000000);
-            m.emissiveIntensity = idx === 2 ? 0.95 : 0;
+            m.emissive.setHex(idx === 2 ? 0xea580c : 0xb91c1c);
+            m.emissiveIntensity = idx === 2 ? 2.85 : 1.58;
           }
         });
       }
@@ -5174,8 +5607,12 @@ export class FirstPersonGameEngine {
     for (let i = this.particles.length - 1; i >= 0; i--) {
       const pt = this.particles[i];
       pt.life -= dt;
-      pt.velocity.y -= 12 * dt;
+      pt.velocity.y -= (pt.isBlood ? 15.5 : 12) * dt;
       pt.mesh.position.addScaledVector(pt.velocity, dt);
+      if (pt.isBlood && pt.maxLife) {
+        const frac = Math.max(0.25, pt.life / pt.maxLife);
+        pt.mesh.scale.setScalar(0.55 + frac * 0.65);
+      }
       if (pt.life <= 0) {
         this.scene.remove(pt.mesh);
         const mat = pt.mesh.material as THREE.MeshBasicMaterial;
@@ -5184,6 +5621,17 @@ export class FirstPersonGameEngine {
           if (mat.userData.activeParticles <= 0) mat.dispose();
         }
         this.particles.splice(i, 1);
+      }
+    }
+
+    for (let i = 0; i < this.bloodPools.length; i++) {
+      const bp = this.bloodPools[i];
+      if (bp.age < 0.45) {
+        bp.age = Math.min(0.45, bp.age + dt);
+        const t = bp.age / 0.45;
+        const ease = 1 - Math.pow(1 - t, 3);
+        const s = bp.maxScale * (0.32 + 0.68 * ease);
+        bp.mesh.scale.set(s, s, 1);
       }
     }
 
@@ -5379,6 +5827,8 @@ export class FirstPersonGameEngine {
       this.world.checkpointGateLeft.position.x = THREE.MathUtils.lerp(-3.0, -8.5, this.gateOpenAnim);
       this.world.checkpointGateRight.position.x = THREE.MathUtils.lerp(3.0, 8.5, this.gateOpenAnim);
     }
+
+    this.updateFluctuatingPower(dt);
 
     this.world.flickerLights.forEach((fl, i) => {
       if (fl.light.position.distanceToSquared(this.playerPos) > 3800) return;
@@ -5675,6 +6125,9 @@ export class FirstPersonGameEngine {
       lastHeartbeatAt: this.lastHeartbeatAt,
       nearestThreatDistance:
         this.nearestThreatDistance !== null ? Math.round(this.nearestThreatDistance * 10) / 10 : null,
+      proximityThreatDetected: this.proximityThreatDetected,
+      proximityThreatIntensity: Number(this.proximityThreatIntensity.toFixed(3)),
+      proximityThreatCount: this.proximityThreatCount,
       suitIntegrity: (() => {
         const armorRatio = this.maxArmor > 0 ? this.armor / this.maxArmor : 1;
         const avgBody =
@@ -5810,14 +6263,27 @@ export class FirstPersonGameEngine {
     const lowHealthStress =
       hpRatio < 0.55 ? Math.min(1, Math.pow((0.55 - hpRatio) / 0.55, 0.85)) : 0;
 
-    let nearestDist: number | null = null;
+    const CRITICAL_RADIUS = 5.0;
+    const CRITICAL_RADIUS_SQ = 25.0;
+    const px = this.playerPos.x;
+    const py = this.playerPos.y;
+    const pz = this.playerPos.z;
+
+    let nearestDistSq: number | null = null;
+    let nearestInCritical: number | null = null;
+    let criticalCount = 0;
     let maxThreatStress = 0;
 
-    for (const enemy of this.enemies) {
-      if (!enemy.active || enemy.state === 'DEAD') continue;
-      const dist = enemy.position.distanceTo(this.playerPos);
-      if (nearestDist === null || dist < nearestDist) {
-        nearestDist = dist;
+    for (let i = 0; i < this.enemies.length; i++) {
+      const enemy = this.enemies[i];
+      if (!enemy.active || enemy.state === 'DEAD' || enemy.huskCollapsed) continue;
+      const dx = enemy.position.x - px;
+      const dy = enemy.position.y - py;
+      const dz = enemy.position.z - pz;
+      const distSq = dx * dx + dy * dy + dz * dz;
+
+      if (nearestDistSq === null || distSq < nearestDistSq) {
+        nearestDistSq = distSq;
       }
 
       const isElite =
@@ -5830,8 +6296,8 @@ export class FirstPersonGameEngine {
         enemy.type === 'void_walker';
 
       const isAggressive = enemy.state === 'CHASE' || enemy.state === 'ATTACK';
-      let radius = 0;
-      let weight = 0;
+      let radius = 9;
+      let weight = 0.4;
       if (enemy.isBoss) {
         radius = 32;
         weight = 1.0;
@@ -5841,9 +6307,19 @@ export class FirstPersonGameEngine {
       } else if (isAggressive) {
         radius = 16;
         weight = 0.76;
-      } else {
-        radius = 9;
-        weight = 0.4;
+      }
+
+      // Skip sqrt when outside both heartbeat radius and critical 5m detection zone
+      const maxCheckSq = radius * radius;
+      if (distSq >= maxCheckSq && distSq > CRITICAL_RADIUS_SQ) continue;
+
+      const dist = Math.sqrt(distSq);
+      if (distSq <= CRITICAL_RADIUS_SQ) {
+        criticalCount += 1;
+        if (nearestInCritical === null || dist < nearestInCritical) {
+          nearestInCritical = dist;
+        }
+        weight = Math.max(weight, 0.95);
       }
 
       if (dist < radius) {
@@ -5855,15 +6331,60 @@ export class FirstPersonGameEngine {
       }
     }
 
+    const nearestDist = nearestDistSq !== null ? Math.sqrt(nearestDistSq) : null;
     this.nearestThreatDistance = nearestDist;
 
+    // 5m Critical Proximity Threat State + Multi-Enemy Escalation
+    const prevDetected = this.proximityThreatDetected;
+    this.proximityThreatCount = criticalCount;
+    this.proximityThreatDetected = criticalCount > 0;
+
+    let targetProximity = 0;
+    if (criticalCount > 0 && nearestInCritical !== null) {
+      const closeness = 1.0 - Math.min(1.0, nearestInCritical / CRITICAL_RADIUS);
+      const baseUrgency = 0.28 + 0.72 * Math.pow(closeness, 0.85);
+      const multiBonus = criticalCount > 1 ? Math.min(0.42, (criticalCount - 1) * 0.2) : 0;
+      targetProximity = Math.min(1, baseUrgency + multiBonus);
+    }
+
+    const proxSmooth = targetProximity > this.proximityThreatIntensity ? 8.5 : 3.2;
+    this.proximityThreatIntensity +=
+      (targetProximity - this.proximityThreatIntensity) * Math.min(1, dt * proxSmooth);
+    if (!this.proximityThreatDetected && this.proximityThreatIntensity < 0.008) {
+      this.proximityThreatIntensity = 0;
+    }
+
+    if (this.proximityAlertTimer > 0) {
+      this.proximityAlertTimer = Math.max(0, this.proximityAlertTimer - dt);
+    }
+    if (this.proximityThreatDetected) {
+      if (!prevDetected && this.proximityAlertTimer <= 0) {
+        this.audio.playProximityThreatAlert(targetProximity, criticalCount);
+        this.proximityAlertTimer = Math.max(0.58, 1.35 - targetProximity * 0.72);
+        this.pushHud(true);
+      } else if (this.proximityAlertTimer <= 0) {
+        this.audio.playProximityThreatAlert(this.proximityThreatIntensity, criticalCount);
+        this.proximityAlertTimer = Math.max(0.55, 1.42 - this.proximityThreatIntensity * 0.82);
+      }
+    } else if (prevDetected) {
+      this.pushHud(true);
+    }
+
+    const criticalHeartbeatFloor =
+      criticalCount > 0 ? 0.56 + targetProximity * 0.44 : 0;
     const targetIntensity = Math.min(
       1,
-      Math.max(lowHealthStress, maxThreatStress, lowHealthStress * 0.68 + maxThreatStress * 0.52)
+      Math.max(
+        lowHealthStress,
+        maxThreatStress,
+        criticalHeartbeatFloor,
+        lowHealthStress * 0.68 + maxThreatStress * 0.52
+      )
     );
-    const smoothRate = targetIntensity > this.heartbeatIntensity ? 5.0 : 2.4;
+    const smoothRate = targetIntensity > this.heartbeatIntensity ? 5.6 : 2.4;
     this.heartbeatIntensity += (targetIntensity - this.heartbeatIntensity) * Math.min(1, dt * smoothRate);
-    this.heartbeatBpm = 70 + this.heartbeatIntensity * 88;
+    const crowdBpmBonus = criticalCount > 1 ? Math.min(16, (criticalCount - 1) * 7) : 0;
+    this.heartbeatBpm = 70 + this.heartbeatIntensity * 94 + crowdBpmBonus;
     this.heartbeatPulse = Math.max(0, this.heartbeatPulse - dt * 3.8);
 
     this.heartbeatPhase += dt * (this.heartbeatBpm / 60);
@@ -6061,6 +6582,9 @@ export class FirstPersonGameEngine {
         this.updateRadiationAndGeiger(dt);
       }
       this.pushHud();
+    } else if (this.activePuzzleId && !this.isDead && !this.missionEnded) {
+      this.elapsedSeconds += dt;
+      this.updateFluctuatingPower(dt);
     }
 
     if (!this.contextLost) {
@@ -6268,6 +6792,14 @@ export class FirstPersonGameEngine {
     this.beaconGeoBeam?.dispose();
     this.beaconGeoRing?.dispose();
     this.beaconGeoMarker?.dispose();
+
+    for (const bp of this.bloodPools) {
+      this.scene.remove(bp.mesh);
+      bp.mat.dispose();
+    }
+    this.bloodPools = [];
+    this.bloodPoolGeo.dispose();
+    this.sharedBloodGeo.dispose();
 
     for (const sw of this.shockwaves) {
       this.scene.remove(sw.mesh);

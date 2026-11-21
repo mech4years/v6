@@ -24,6 +24,7 @@ interface Props {
   reducedMotion?: boolean;
   initialChallenge?: GeneratorChallengeState;
   onChallengeChange?: (next: GeneratorChallengeState) => void;
+  onSkillCheckMiss?: () => void;
   onResolve: (solved: boolean) => void;
 }
 
@@ -40,6 +41,7 @@ export const PuzzleModal: React.FC<Props> = ({
   reducedMotion = false,
   initialChallenge,
   onChallengeChange,
+  onSkillCheckMiss,
   onResolve,
 }) => {
   const puzzle = PUZZLES[puzzleId];
@@ -387,6 +389,7 @@ export const PuzzleModal: React.FC<Props> = ({
             reducedMotion={reducedMotion}
             initialStabilizationPct={initialChallenge?.stabilizationPct ?? 0}
             onStabilizationChange={handleStabilizationChange}
+            onSkillCheckMiss={onSkillCheckMiss}
             onComplete={() => setCircuitSolved(true)}
           />
         ) : (

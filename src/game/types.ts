@@ -1,4 +1,15 @@
-export type CharacterId = 'raven' | 'ghost' | 'brute' | 'nyx' | 'zero';
+export type CharacterId =
+  | 'reaper'
+  | 'ghost'
+  | 'titan'
+  | 'patch'
+  | 'phantom'
+  | 'engineer'
+  | 'wanderer'
+  | 'raven'
+  | 'brute'
+  | 'nyx'
+  | 'zero';
 
 export type WeaponId =
   | 'assault_rifle'
@@ -29,6 +40,7 @@ export type EnemyType =
   | 'guardian'
   | 'helios_unit'
   | 'void_walker'
+  | 'harvester'
   | 'origin';
 
 export type Difficulty = 'survivor' | 'tactical' | 'nightmare';
@@ -82,6 +94,7 @@ export type CutsceneTargetId =
 
 export type GameScreen =
   | 'cutscene'
+  | 'operative_intro'
   | 'level_cutscene'
   | 'menu'
   | 'characters'
@@ -189,6 +202,7 @@ export interface CharacterStats {
   health: number;
   speed: number;
   armor: number;
+  damage?: number;
   specialtyLabel: string;
   specialtyValue: number;
 }
@@ -201,18 +215,42 @@ export interface CharacterAbility {
   accentColor: string;
 }
 
+export interface CharacterVoiceProfile {
+  pitchHz: number;
+  timbre: 'gravel' | 'calm' | 'heavy' | 'synthetic' | 'clinical' | 'whisper' | 'raspy';
+  personalityTag: string;
+}
+
 export interface CharacterDef {
   id: CharacterId;
   callsign: string;
+  classification?: string;
   role: string;
   bio: string;
+  backstory?: string;
   appearanceSummary: string;
   primaryWeapon: WeaponId;
+  equipmentList?: string[];
   stats: CharacterStats;
   ability: CharacterAbility;
+  voiceProfile?: CharacterVoiceProfile;
+  damageMult?: number;
+  critMult?: number;
+  damageResist?: number;
+  isPrimaryRoster?: boolean;
   armorColor: string;
   trimColor: string;
   visorColor: string;
+}
+
+export interface StoryCharacterDef {
+  id: 'wanderer' | 'raven_09' | 'vex' | 'the_harvester' | 'dr_zero';
+  name: string;
+  role: string;
+  faction: string;
+  accentColor: string;
+  summary: string;
+  dialogueStyle: string;
 }
 
 export interface WeaponDef {
@@ -523,6 +561,8 @@ export interface HudSnapshot {
   reloadProgress: number;
   isAiming: boolean;
   isCrouching: boolean;
+  isCrawling: boolean;
+  isVaulting: boolean;
   isSprinting: boolean;
   abilityActive: boolean;
   abilityActiveRemaining: number;
@@ -544,6 +584,7 @@ export interface HudSnapshot {
   interactEducationId?: string | null;
   monstersFrozen?: boolean;
   radioBanner: { speaker: string; text: string } | null;
+  operativeQuip?: { speaker: string; text: string; accentColor: string } | null;
   missionBanner: { title: string; objective: string; timer: number } | null;
   chapterIntro: {
     number: number;
@@ -558,11 +599,19 @@ export interface HudSnapshot {
   isSniperAds: boolean;
   moveSpread: number;
   damageFlash: number;
+  hurtDirectionDeg?: number | null;
+  knockdownTimer?: number;
+  playerWear?: number;
+  turretActive?: boolean;
+  turretRemaining?: number;
   heartbeatBpm: number;
   heartbeatIntensity: number;
   heartbeatPulse: number;
   lastHeartbeatAt: number;
   nearestThreatDistance: number | null;
+  proximityThreatDetected: boolean;
+  proximityThreatIntensity: number;
+  proximityThreatCount: number;
   suitIntegrity: number;
   bodyCondition: BodyCondition;
   radiationLevel: number;

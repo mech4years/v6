@@ -20,6 +20,7 @@ interface GeneratorCircuitPuzzleProps {
   reducedMotion?: boolean;
   initialStabilizationPct?: number;
   onStabilizationChange?: (pct: number) => void;
+  onSkillCheckMiss?: () => void;
   onComplete: () => void;
 }
 
@@ -42,6 +43,7 @@ export const GeneratorCircuitPuzzle: React.FC<GeneratorCircuitPuzzleProps> = ({
   reducedMotion = false,
   initialStabilizationPct = 0,
   onStabilizationChange,
+  onSkillCheckMiss,
   onComplete,
 }) => {
   const board = useMemo(
@@ -191,10 +193,11 @@ export const GeneratorCircuitPuzzle: React.FC<GeneratorCircuitPuzzleProps> = ({
         setStatusMsg(
           `Minor electrical sparks! Lost 12% charge (${nextTotal}%). Suit intact, no noise alert.`
         );
+        onSkillCheckMiss?.();
         window.setTimeout(() => setSparksFlash(false), 650);
       }
     },
-    [baseLinkPct, checkBonusPct]
+    [baseLinkPct, checkBonusPct, onSkillCheckMiss]
   );
 
   const pairById = useMemo(() => {
