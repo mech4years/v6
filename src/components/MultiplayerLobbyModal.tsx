@@ -11,7 +11,7 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { CHARACTERS, MISSIONS } from '../game/data';
+import { CHARACTERS, MISSIONS, normalizeCharacterId } from '../game/data';
 import { CharacterId, GameSettings } from '../game/types';
 
 interface Props {
@@ -19,7 +19,12 @@ interface Props {
   onSelectCharacter: (id: CharacterId) => void;
   settings: GameSettings;
   onClose: () => void;
-  onStartCoopMission: (missionId: string, charId: CharacterId) => void;
+  onStartCoopMission: (
+    missionId: string,
+    charId: CharacterId,
+    sessionId: string,
+    role: 'host' | 'client'
+  ) => void;
 }
 
 interface LobbiesItem {
@@ -89,7 +94,7 @@ export const MultiplayerLobbyModal: React.FC<Props> = ({
     players: { name: string; ready: boolean; char: CharacterId }[];
   } | null>(null);
 
-  const charDef = CHARACTERS[selectedCharacter];
+  const charDef = CHARACTERS[normalizeCharacterId(selectedCharacter)];
   const mainMissions = MISSIONS.filter((m) => !m.isBonusArena);
 
   const handleCreateLobby = () => {
@@ -162,7 +167,7 @@ export const MultiplayerLobbyModal: React.FC<Props> = ({
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-zinc-800">
                 {activeSession.players.map((p, idx) => {
-                  const pChar = CHARACTERS[p.char];
+                  const pChar = CHARACTERS[normalizeCharacterId(p.char)];
                   return (
                     <div key={idx} className="border border-zinc-800 bg-black/60 p-4 flex items-center justify-between">
                       <div className="flex items-center gap-3">
@@ -196,19 +201,24 @@ export const MultiplayerLobbyModal: React.FC<Props> = ({
                 })}
               </div>
 
-              {activeSession.isHost && (
-                <div className="pt-4 flex items-center justify-end gap-3">
-                  <button
-                    onClick={() => {
-                      onStartCoopMission(selectedMissionId, selectedCharacter);
-                    }}
-                    className="px-6 py-3 bg-red-700 hover:bg-red-600 text-white font-display font-semibold tracking-wider flex items-center gap-2 cursor-pointer"
-                  >
-                    <Zap className="w-4 h-4" />
-                    <span>START CO-OP MISSION</span>
-                  </button>
-                </div>
-              )}
+              <div className="pt-4 flex items-center justify-end gap-3">
+                <button
+                  onClick={() => {
+                    onStartCoopMission(
+                      selectedMissionId,
+                      selectedCharacter,
+                      activeSession.id,
+                      activeSession.isHost ? 'host' : 'client'
+                    );
+                  }}
+                  className="px-6 py-3 bg-red-700 hover:bg-red-600 text-white font-display font-semibold tracking-wider flex items-center gap-2 cursor-pointer"
+                >
+                  <Zap className="w-4 h-4" />
+                  <span>
+                    {activeSession.isHost ? 'START CO-OP MISSION' : 'DEPLOY INTO CO-OP SESSION'}
+                  </span>
+                </button>
+              </div>
             </div>
           </div>
         ) : (
@@ -409,7 +419,7 @@ export const MultiplayerLobbyModal: React.FC<Props> = ({
                               {c.callsign}
                             </span>
                             <span
-                              className="w-3 h-3 rounded-full"
+                              className="w-3 h-3 border border-black/40"
                               style={{ backgroundColor: c.visorColor }}
                             />
                           </div>

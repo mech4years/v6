@@ -538,6 +538,198 @@ export class HorrorAudioEngine {
     }
   }
 
+  public playArmorImpact(intensity = 1, powerful = false, distance = 0.5, pan = 0): void {
+    if (!this.ctx || !this.sfxGain || this.ctx.state !== 'running') return;
+    const atten = Math.max(0.12, Math.min(1, 14 / (distance + 4))) * Math.max(0.4, Math.min(1.3, intensity));
+    const now = this.ctx.currentTime;
+
+    const connectOut = (node: AudioNode) => {
+      if (typeof this.ctx!.createStereoPanner === 'function') {
+        const panner = this.ctx!.createStereoPanner();
+        panner.pan.value = Math.max(-1, Math.min(1, pan));
+        node.connect(panner);
+        panner.connect(this.sfxGain!);
+      } else {
+        node.connect(this.sfxGain!);
+      }
+    };
+
+    // Metallic plate ring
+    const ring = this.ctx.createOscillator();
+    const rg = this.ctx.createGain();
+    ring.type = powerful ? 'sawtooth' : 'triangle';
+    ring.frequency.setValueAtTime(powerful ? 640 : 510, now);
+    ring.frequency.exponentialRampToValueAtTime(140, now + 0.14);
+    rg.gain.setValueAtTime(0.18 * atten, now);
+    rg.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+    ring.connect(rg);
+    connectOut(rg);
+    ring.start(now);
+    ring.stop(now + 0.17);
+
+    // High spark/ceramic ping on heavy hits
+    if (this.noiseBuffer) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noiseBuffer;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = powerful ? 3200 : 1900;
+      bp.Q.value = 1.8;
+      const ng = this.ctx.createGain();
+      ng.gain.setValueAtTime((powerful ? 0.24 : 0.14) * atten, now);
+      ng.gain.exponentialRampToValueAtTime(0.001, now + (powerful ? 0.16 : 0.09));
+      src.connect(bp);
+      bp.connect(ng);
+      connectOut(ng);
+      src.start(now);
+      src.stop(now + 0.18);
+    }
+  }
+
+  public playArmorCrack(severity = 0.6, distance = 0.5, pan = 0): void {
+    if (!this.ctx || !this.sfxGain || this.ctx.state !== 'running') return;
+    const atten = Math.max(0.15, Math.min(1, 16 / (distance + 4))) * Math.max(0.45, Math.min(1.2, severity + 0.4));
+    const now = this.ctx.currentTime;
+
+    const connectOut = (node: AudioNode) => {
+      if (typeof this.ctx!.createStereoPanner === 'function') {
+        const panner = this.ctx!.createStereoPanner();
+        panner.pan.value = Math.max(-1, Math.min(1, pan));
+        node.connect(panner);
+        panner.connect(this.sfxGain!);
+      } else {
+        node.connect(this.sfxGain!);
+      }
+    };
+
+    // Sharp ceramic-steel fracture snap
+    const snap = this.ctx.createOscillator();
+    const sg = this.ctx.createGain();
+    snap.type = 'square';
+    snap.frequency.setValueAtTime(1450 + severity * 450, now);
+    snap.frequency.exponentialRampToValueAtTime(220, now + 0.11);
+    sg.gain.setValueAtTime(0.17 * atten, now);
+    sg.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+    snap.connect(sg);
+    connectOut(sg);
+    snap.start(now);
+    snap.stop(now + 0.13);
+
+    if (this.noiseBuffer) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noiseBuffer;
+      const hp = this.ctx.createBiquadFilter();
+      hp.type = 'bandpass';
+      hp.frequency.value = 2600;
+      hp.Q.value = 1.4;
+      const ng = this.ctx.createGain();
+      ng.gain.setValueAtTime(0.2 * atten, now);
+      ng.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+      src.connect(hp);
+      hp.connect(ng);
+      connectOut(ng);
+      src.start(now);
+      src.stop(now + 0.15);
+    }
+  }
+
+  public playArmorBreak(piece: 'chest' | 'back', distance = 0.5, pan = 0): void {
+    if (!this.ctx || !this.sfxGain || this.ctx.state !== 'running') return;
+    const atten = Math.max(0.18, Math.min(1, 20 / (distance + 4)));
+    const now = this.ctx.currentTime;
+
+    const connectOut = (node: AudioNode) => {
+      if (typeof this.ctx!.createStereoPanner === 'function') {
+        const panner = this.ctx!.createStereoPanner();
+        panner.pan.value = Math.max(-1, Math.min(1, pan));
+        node.connect(panner);
+        panner.connect(this.sfxGain!);
+      } else {
+        node.connect(this.sfxGain!);
+      }
+    };
+
+    // 1. Deep heavy composite plate fracture & chassis tear
+    const lowTear = this.ctx.createOscillator();
+    const lg = this.ctx.createGain();
+    lowTear.type = 'sawtooth';
+    lowTear.frequency.setValueAtTime(piece === 'chest' ? 240 : 280, now);
+    lowTear.frequency.exponentialRampToValueAtTime(48, now + 0.42);
+    lg.gain.setValueAtTime(0.36 * atten, now);
+    lg.gain.exponentialRampToValueAtTime(0.001, now + 0.46);
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 980;
+    lowTear.connect(lp);
+    lp.connect(lg);
+    connectOut(lg);
+    lowTear.start(now);
+    lowTear.stop(now + 0.48);
+
+    // 2. Staggered latch/fastener snaps (pronounced for back armour, dual snap for chest)
+    const snapCount = piece === 'back' ? 3 : 2;
+    for (let i = 0; i < snapCount; i++) {
+      const t = now + i * 0.065;
+      const latch = this.ctx.createOscillator();
+      const cg = this.ctx.createGain();
+      latch.type = 'triangle';
+      latch.frequency.setValueAtTime(1650 - i * 190, t);
+      latch.frequency.exponentialRampToValueAtTime(340, t + 0.08);
+      cg.gain.setValueAtTime(0.24 * atten, t);
+      cg.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+      latch.connect(cg);
+      connectOut(cg);
+      latch.start(t);
+      latch.stop(t + 0.1);
+    }
+
+    // 3. Loud metallic shard burst noise
+    if (this.noiseBuffer) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noiseBuffer;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(2200, now);
+      bp.frequency.exponentialRampToValueAtTime(750, now + 0.36);
+      bp.Q.value = 0.9;
+      const ng = this.ctx.createGain();
+      ng.gain.setValueAtTime(0.42 * atten, now);
+      ng.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
+      src.connect(bp);
+      bp.connect(ng);
+      connectOut(ng);
+      src.start(now);
+      src.stop(now + 0.4);
+    }
+  }
+
+  public playArmorFragmentClink(speed = 4, distance = 2, pan = 0): void {
+    if (!this.ctx || !this.sfxGain || this.ctx.state !== 'running') return;
+    const speedFactor = Math.max(0.25, Math.min(1.1, speed / 7));
+    const atten = Math.max(0.08, Math.min(0.9, 12 / (distance + 3))) * speedFactor;
+    const now = this.ctx.currentTime;
+
+    const ping = this.ctx.createOscillator();
+    const pg = this.ctx.createGain();
+    ping.type = 'triangle';
+    const baseFreq = 1280 + Math.random() * 820;
+    ping.frequency.setValueAtTime(baseFreq, now);
+    ping.frequency.exponentialRampToValueAtTime(baseFreq * 0.56, now + 0.075);
+    pg.gain.setValueAtTime(0.14 * atten, now);
+    pg.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+    ping.connect(pg);
+    if (typeof this.ctx.createStereoPanner === 'function') {
+      const panner = this.ctx.createStereoPanner();
+      panner.pan.value = Math.max(-1, Math.min(1, pan));
+      pg.connect(panner);
+      panner.connect(this.sfxGain);
+    } else {
+      pg.connect(this.sfxGain);
+    }
+    ping.start(now);
+    ping.stop(now + 0.09);
+  }
+
   public playAmbientCreak(pan = 0): void {
     if (!this.ctx || !this.sfxGain || this.ctx.state !== 'running') return;
     const now = this.ctx.currentTime;
@@ -2728,6 +2920,408 @@ export class HorrorAudioEngine {
     zg.connect(this.sfxGain);
     zap.start(now);
     zap.stop(now + 0.18);
+  }
+
+  public playFormerPreInfectionVocal(
+    stage: 'gasp' | 'choke' | 'transformation_scream',
+    distance = 8,
+    pan = 0,
+    occludedWalls = 0,
+    verticalDelta = 0
+  ): void {
+    if (!this.ctx || !this.sfxGain || this.ctx.state !== 'running') return;
+    if (distance > 46) return;
+    const now = this.ctx.currentTime;
+    const atten = Math.max(0.08, 1 - distance / 46);
+    const out = this.ctx.createGain();
+    out.gain.value = 1;
+
+    if (stage === 'gasp') {
+      if (this.noiseBuffer) {
+        const src = this.ctx.createBufferSource();
+        src.buffer = this.noiseBuffer;
+        const bp = this.ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime(680 + Math.random() * 220, now);
+        bp.Q.value = 3.2;
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(0.001, now);
+        g.gain.linearRampToValueAtTime(0.18 * atten, now + 0.08);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 0.42);
+        src.connect(bp);
+        bp.connect(g);
+        g.connect(out);
+        src.start(now, Math.random() * 0.4, 0.46);
+      }
+      const throat = this.ctx.createOscillator();
+      throat.type = 'triangle';
+      throat.frequency.setValueAtTime(145, now);
+      throat.frequency.exponentialRampToValueAtTime(92, now + 0.35);
+      const tg = this.ctx.createGain();
+      tg.gain.setValueAtTime(0.001, now);
+      tg.gain.linearRampToValueAtTime(0.11 * atten, now + 0.05);
+      tg.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
+      throat.connect(tg);
+      tg.connect(out);
+      throat.start(now);
+      throat.stop(now + 0.4);
+    } else if (stage === 'choke') {
+      // Uncanny vocal cords fighting corrupted rasp
+      const oscA = this.ctx.createOscillator();
+      const oscB = this.ctx.createOscillator();
+      const lfo = this.ctx.createOscillator();
+      const lfoGain = this.ctx.createGain();
+      oscA.type = 'sawtooth';
+      oscB.type = 'triangle';
+      oscA.frequency.setValueAtTime(175 + Math.random() * 35, now);
+      oscA.frequency.linearRampToValueAtTime(108, now + 0.65);
+      oscB.frequency.setValueAtTime(86, now);
+      oscB.frequency.linearRampToValueAtTime(64, now + 0.65);
+      lfo.frequency.value = 26;
+      lfoGain.gain.value = 32;
+      lfo.connect(lfoGain);
+      lfoGain.connect(oscA.frequency);
+
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(760, now);
+      bp.Q.value = 2.0;
+
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.001, now);
+      g.gain.linearRampToValueAtTime(0.24 * atten, now + 0.08);
+      g.gain.setValueAtTime(0.14 * atten, now + 0.32);
+      g.gain.linearRampToValueAtTime(0.22 * atten, now + 0.44);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.72);
+
+      oscA.connect(bp);
+      oscB.connect(bp);
+      bp.connect(g);
+      g.connect(out);
+      lfo.start(now);
+      oscA.start(now);
+      oscB.start(now);
+      lfo.stop(now + 0.74);
+      oscA.stop(now + 0.74);
+      oscB.stop(now + 0.74);
+    } else {
+      // Dual-layered agonizing human scream morphing into infected shriek
+      const humanOsc = this.ctx.createOscillator();
+      const infOsc = this.ctx.createOscillator();
+      const subOsc = this.ctx.createOscillator();
+      humanOsc.type = 'sawtooth';
+      infOsc.type = 'square';
+      subOsc.type = 'sine';
+
+      humanOsc.frequency.setValueAtTime(280, now);
+      humanOsc.frequency.exponentialRampToValueAtTime(520, now + 0.35);
+      humanOsc.frequency.exponentialRampToValueAtTime(165, now + 1.45);
+
+      infOsc.frequency.setValueAtTime(420, now + 0.12);
+      infOsc.frequency.exponentialRampToValueAtTime(860, now + 0.68);
+      infOsc.frequency.exponentialRampToValueAtTime(230, now + 1.55);
+
+      subOsc.frequency.setValueAtTime(95, now);
+      subOsc.frequency.exponentialRampToValueAtTime(52, now + 1.45);
+
+      const formant = this.ctx.createBiquadFilter();
+      formant.type = 'bandpass';
+      formant.frequency.setValueAtTime(920, now);
+      formant.frequency.exponentialRampToValueAtTime(1480, now + 0.55);
+      formant.frequency.exponentialRampToValueAtTime(540, now + 1.5);
+      formant.Q.value = 1.6;
+
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.001, now);
+      g.gain.linearRampToValueAtTime(0.34 * atten, now + 0.14);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 1.62);
+
+      humanOsc.connect(formant);
+      infOsc.connect(formant);
+      subOsc.connect(g);
+      formant.connect(g);
+      g.connect(out);
+
+      humanOsc.start(now);
+      infOsc.start(now + 0.08);
+      subOsc.start(now);
+      humanOsc.stop(now + 1.65);
+      infOsc.stop(now + 1.65);
+      subOsc.stop(now + 1.65);
+    }
+
+    this.routeSpatial(out, pan, occludedWalls, distance, true, verticalDelta);
+  }
+
+  public playFormerBoneCrack(
+    severity = 0.7,
+    distance = 8,
+    pan = 0,
+    occludedWalls = 0,
+    verticalDelta = 0
+  ): void {
+    if (!this.ctx || !this.sfxGain || this.ctx.state !== 'running') return;
+    if (distance > 36) return;
+    const now = this.ctx.currentTime;
+    const sev = Math.max(0.2, Math.min(1, severity));
+    const atten = Math.max(0.08, 1 - distance / 36);
+    const out = this.ctx.createGain();
+
+    // Primary sharp bone snap pop
+    const snapOsc = this.ctx.createOscillator();
+    snapOsc.type = 'triangle';
+    snapOsc.frequency.setValueAtTime(340 + sev * 180 + Math.random() * 90, now);
+    snapOsc.frequency.exponentialRampToValueAtTime(72, now + 0.048);
+    const sg = this.ctx.createGain();
+    sg.gain.setValueAtTime((0.18 + sev * 0.2) * atten, now);
+    sg.gain.exponentialRampToValueAtTime(0.001, now + 0.055);
+    snapOsc.connect(sg);
+    sg.connect(out);
+    snapOsc.start(now);
+    snapOsc.stop(now + 0.065);
+
+    // Calcified noise crackle transient
+    if (this.noiseBuffer) {
+      const nSrc = this.ctx.createBufferSource();
+      nSrc.buffer = this.noiseBuffer;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(1450 + sev * 750, now);
+      bp.Q.value = 2.4;
+      const ng = this.ctx.createGain();
+      ng.gain.setValueAtTime((0.2 + sev * 0.24) * atten, now);
+      ng.gain.exponentialRampToValueAtTime(0.001, now + 0.065);
+      nSrc.connect(bp);
+      bp.connect(ng);
+      ng.connect(out);
+      nSrc.start(now, Math.random() * 0.25, 0.075);
+
+      // Delayed secondary tendon wrench / joint crunch on severe seizures
+      if (sev >= 0.52) {
+        const t2 = now + 0.028 + Math.random() * 0.022;
+        const cSrc = this.ctx.createBufferSource();
+        cSrc.buffer = this.noiseBuffer;
+        const cBp = this.ctx.createBiquadFilter();
+        cBp.type = 'bandpass';
+        cBp.frequency.setValueAtTime(920, t2);
+        cBp.Q.value = 1.9;
+        const cg = this.ctx.createGain();
+        cg.gain.setValueAtTime(0.16 * sev * atten, t2);
+        cg.gain.exponentialRampToValueAtTime(0.001, t2 + 0.085);
+        cSrc.connect(cBp);
+        cBp.connect(cg);
+        cg.connect(out);
+        cSrc.start(t2, Math.random() * 0.3, 0.095);
+      }
+    }
+
+    this.routeSpatial(out, pan, occludedWalls, distance, false, verticalDelta);
+  }
+
+  public playFormerLimpingFootstep(
+    isDraggingScrape: boolean,
+    distance = 8,
+    pan = 0,
+    occludedWalls = 0,
+    verticalDelta = 0
+  ): void {
+    if (!this.ctx || !this.sfxGain || this.ctx.state !== 'running') return;
+    if (distance > 38) return;
+    const now = this.ctx.currentTime;
+    const atten = Math.max(0.08, 1 - distance / 38);
+    const g = this.ctx.createGain();
+
+    if (isDraggingScrape) {
+      if (this.noiseBuffer) {
+        const src = this.ctx.createBufferSource();
+        src.buffer = this.noiseBuffer;
+        const bp = this.ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime(480, now);
+        bp.frequency.linearRampToValueAtTime(290, now + 0.24);
+        bp.Q.value = 1.9;
+        g.gain.setValueAtTime(0.001, now);
+        g.gain.linearRampToValueAtTime(0.16 * atten, now + 0.04);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 0.26);
+        src.connect(bp);
+        bp.connect(g);
+        src.start(now, Math.random() * 0.3, 0.28);
+      }
+      // Faint bone/gear joint pop on dragged boot
+      const pop = this.ctx.createOscillator();
+      pop.type = 'triangle';
+      pop.frequency.setValueAtTime(190, now);
+      pop.frequency.exponentialRampToValueAtTime(75, now + 0.055);
+      const pg = this.ctx.createGain();
+      pg.gain.setValueAtTime(0.08 * atten, now);
+      pg.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+      pop.connect(pg);
+      pg.connect(g);
+      pop.start(now);
+      pop.stop(now + 0.07);
+    } else {
+      const thud = this.ctx.createOscillator();
+      thud.type = 'sine';
+      thud.frequency.setValueAtTime(102, now);
+      thud.frequency.exponentialRampToValueAtTime(38, now + 0.14);
+      g.gain.setValueAtTime(0.24 * atten, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+      thud.connect(g);
+      thud.start(now);
+      thud.stop(now + 0.18);
+    }
+
+    this.routeSpatial(g, pan, occludedWalls, distance, false, verticalDelta);
+  }
+
+  public playFormerRecognitionWhisper(
+    distance = 8,
+    pan = 0,
+    occludedWalls = 0,
+    verticalDelta = 0
+  ): void {
+    if (!this.ctx || !this.sfxGain || this.ctx.state !== 'running') return;
+    if (distance > 38) return;
+    const now = this.ctx.currentTime;
+    const atten = Math.max(0.12, 1 - distance / 38);
+    const out = this.ctx.createGain();
+
+    // Haunting dual-syllable distorted human vocal murmur ("...who... ...no...") followed by static break
+    const syllables = [
+      { t: 0, f1: 162, f2: 128, dur: 0.38 },
+      { t: 0.52, f1: 185, f2: 110, dur: 0.48 },
+    ];
+    syllables.forEach((s) => {
+      if (!this.ctx) return;
+      const t0 = now + s.t;
+      const carrier = this.ctx.createOscillator();
+      const mod = this.ctx.createOscillator();
+      const modG = this.ctx.createGain();
+      carrier.type = 'sawtooth';
+      carrier.frequency.setValueAtTime(s.f1, t0);
+      carrier.frequency.exponentialRampToValueAtTime(s.f2, t0 + s.dur);
+      mod.type = 'sine';
+      mod.frequency.value = 31;
+      modG.gain.value = 24;
+      mod.connect(modG);
+      modG.connect(carrier.frequency);
+
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(720, t0);
+      bp.Q.value = 2.8;
+
+      const sg = this.ctx.createGain();
+      sg.gain.setValueAtTime(0.001, t0);
+      sg.gain.linearRampToValueAtTime(0.24 * atten, t0 + 0.06);
+      sg.gain.exponentialRampToValueAtTime(0.001, t0 + s.dur);
+
+      carrier.connect(bp);
+      bp.connect(sg);
+      sg.connect(out);
+      carrier.start(t0);
+      mod.start(t0);
+      carrier.stop(t0 + s.dur + 0.02);
+      mod.stop(t0 + s.dur + 0.02);
+    });
+
+    if (this.noiseBuffer) {
+      const radio = this.ctx.createBufferSource();
+      radio.buffer = this.noiseBuffer;
+      const hp = this.ctx.createBiquadFilter();
+      hp.type = 'bandpass';
+      hp.frequency.value = 1850;
+      hp.Q.value = 3.5;
+      const rg = this.ctx.createGain();
+      rg.gain.setValueAtTime(0.001, now);
+      rg.gain.linearRampToValueAtTime(0.09 * atten, now + 0.1);
+      rg.gain.exponentialRampToValueAtTime(0.001, now + 1.05);
+      radio.connect(hp);
+      hp.connect(rg);
+      rg.connect(out);
+      radio.start(now, 0, 1.1);
+    }
+
+    this.routeSpatial(out, pan, occludedWalls, distance, true, verticalDelta);
+  }
+
+  public playFormerCorruptedGunshot(
+    weaponId: string,
+    distance = 12,
+    pan = 0,
+    occludedWalls = 0,
+    verticalDelta = 0
+  ): void {
+    if (!this.ctx || !this.sfxGain || this.ctx.state !== 'running') return;
+    if (distance > 56) return;
+    const now = this.ctx.currentTime;
+    const atten = Math.max(0.08, 1 - distance / 56);
+    const out = this.ctx.createGain();
+
+    const isEnergy = weaponId === 'energy_rifle' || weaponId === 'plasma_lance';
+    const isHeavy = weaponId === 'sniper_rifle' || weaponId === 'heavy_mg' || weaponId === 'shotgun';
+
+    const osc = this.ctx.createOscillator();
+    osc.type = isEnergy ? 'sawtooth' : 'triangle';
+    osc.frequency.setValueAtTime(isEnergy ? 640 : isHeavy ? 195 : 310, now);
+    osc.frequency.exponentialRampToValueAtTime(isEnergy ? 115 : 54, now + (isHeavy ? 0.22 : 0.14));
+
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime((isHeavy ? 0.34 : 0.25) * atten, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + (isHeavy ? 0.25 : 0.16));
+    osc.connect(g);
+    g.connect(out);
+    osc.start(now);
+    osc.stop(now + 0.28);
+
+    if (this.noiseBuffer && !isEnergy) {
+      const snap = this.ctx.createBufferSource();
+      snap.buffer = this.noiseBuffer;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(isHeavy ? 1100 : 1550, now);
+      bp.Q.value = 1.2;
+      const ng = this.ctx.createGain();
+      ng.gain.setValueAtTime(0.26 * atten, now);
+      ng.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+      snap.connect(bp);
+      bp.connect(ng);
+      ng.connect(out);
+      snap.start(now, Math.random() * 0.2, 0.16);
+    }
+
+    this.routeSpatial(out, pan, occludedWalls, distance, true, verticalDelta);
+  }
+
+  public playFormerCorruptedReload(
+    distance = 10,
+    pan = 0,
+    occludedWalls = 0,
+    verticalDelta = 0
+  ): void {
+    if (!this.ctx || !this.sfxGain || this.ctx.state !== 'running') return;
+    if (distance > 34) return;
+    const now = this.ctx.currentTime;
+    const atten = Math.max(0.08, 1 - distance / 34);
+    const out = this.ctx.createGain();
+
+    [0, 0.42].forEach((offset, i) => {
+      if (!this.ctx) return;
+      const t = now + offset;
+      const osc = this.ctx.createOscillator();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(i === 0 ? 480 : 660, t);
+      osc.frequency.exponentialRampToValueAtTime(i === 0 ? 220 : 340, t + 0.06);
+      const cg = this.ctx.createGain();
+      cg.gain.setValueAtTime(0.14 * atten, t);
+      cg.gain.exponentialRampToValueAtTime(0.001, t + 0.075);
+      osc.connect(cg);
+      cg.connect(out);
+      osc.start(t);
+      osc.stop(t + 0.09);
+    });
+
+    this.routeSpatial(out, pan, occludedWalls, distance, false, verticalDelta);
   }
 
   public dispose(): void {

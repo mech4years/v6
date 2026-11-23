@@ -8,12 +8,19 @@ import {
   Pause,
   Radio,
   Shield,
+  User,
   Volume2,
   Zap,
 } from 'lucide-react';
-import { CHARACTERS, WEAPONS } from '../game/data';
+import { CHARACTERS, WEAPONS, normalizeCharacterId } from '../game/data';
 import { computeLubDubPulse } from '../game/heartbeatCurve';
-import { CharacterId, GameSettings, HudSnapshot, TouchAction } from '../game/types';
+import {
+  ArmourPieceId,
+  CharacterId,
+  GameSettings,
+  HudSnapshot,
+  TouchAction,
+} from '../game/types';
 import { GeigerCounterWidget } from './GeigerCounterWidget';
 import { MobileTouchControls } from './MobileTouchControls';
 import { OperativeFaceCam3D } from './OperativeFaceCam3D';
@@ -27,16 +34,28 @@ interface Props {
   onOpenFaceCamTab: () => void;
   onOpenSuitCheck: () => void;
   onToggleGeigerMute: () => void;
+  onToggleThirdPerson?: () => void;
   onLockPointer: () => void;
   onPause: () => void;
   onOpenInventory: () => void;
   onOpenDatabase?: () => void;
+  onOpenAdminMenu?: () => void;
   onTouchMove: (x: number, y: number) => void;
   onTouchLook: (dx: number, dy: number) => void;
   onTouchAction: (action: TouchAction) => void;
 }
 
 const COMPASS_LABELS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+
+const ARMOUR_HUD_ORDER: { id: ArmourPieceId; short: string }[] = [
+  { id: 'helmet', short: 'HELM' },
+  { id: 'chest', short: 'CHST' },
+  { id: 'back', short: 'BACK' },
+  { id: 'leftArm', short: 'L.ARM' },
+  { id: 'rightArm', short: 'R.ARM' },
+  { id: 'leftLeg', short: 'L.LEG' },
+  { id: 'rightLeg', short: 'R.LEG' },
+];
 
 export const GameHud: React.FC<Props> = ({
   hud,
@@ -47,15 +66,17 @@ export const GameHud: React.FC<Props> = ({
   onOpenFaceCamTab,
   onOpenSuitCheck,
   onToggleGeigerMute,
+  onToggleThirdPerson,
   onLockPointer,
   onPause,
   onOpenInventory,
   onOpenDatabase,
+  onOpenAdminMenu,
   onTouchMove,
   onTouchLook,
   onTouchAction,
 }) => {
-  const charDef = CHARACTERS[characterId];
+  const charDef = CHARACTERS[normalizeCharacterId(characterId)];
   const activeWeapon = hud.weapons[hud.activeSlot];
   const weaponDef = WEAPONS[activeWeapon.id];
   const secondarySlot = hud.activeSlot === 0 ? 1 : 0;
@@ -467,6 +488,69 @@ export const GameHud: React.FC<Props> = ({
             </div>
           )}
 
+          {hud.formerAlert && (
+            <div
+              className={`max-w-lg px-5 py-2.5 text-center border bg-black/82 transition-opacity duration-300 ${
+                hud.formerAlert.stageKind === 'recognition'
+                  ? hud.formerAlert.threatLevel === 'CRITICAL'
+                    ? 'border-red-500/90'
+                    : 'border-amber-500/85'
+                  : 'border-red-600/80'
+              }`}
+              style={{ opacity: Math.min(1, hud.formerAlert.timer / 0.55) }}
+            >
+              <div className="flex items-center justify-center gap-2 text-[10px] font-mono-tech tracking-[0.24em] text-red-400">
+                <span>⚠</span>
+                <span>{hud.formerAlert.tag}</span>
+              </div>
+              <div className="font-display text-sm sm:text-base font-bold tracking-[0.16em] text-zinc-100 mt-0.5">
+                {hud.formerAlert.identityLine}
+              </div>
+              <div className="text-[11px] font-mono-tech tracking-wider text-zinc-300 mt-0.5">
+                {hud.formerAlert.subtitle}
+              </div>
+              <div className="mt-1.5 flex items-center justify-center gap-3 text-[10px] font-mono-tech tracking-[0.18em]">
+                <span className="text-red-300 font-semibold">{hud.formerAlert.classification}</span>
+                <span className="text-zinc-500">·</span>
+                <span
+                  className={`font-bold ${
+                    hud.formerAlert.threatLevel === 'CRITICAL'
+                      ? 'text-red-400'
+                      : hud.formerAlert.threatLevel === 'HIGH'
+                        ? 'text-amber-300'
+                        : 'text-zinc-200'
+                  }`}
+                >
+                  THREAT LEVEL: {hud.formerAlert.threatLevel}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {hud.armourBanner && (
+            <div
+              role="status"
+              aria-live="assertive"
+              className={`max-w-lg px-6 py-2.5 text-center border bg-[#090304]/90 shadow-[0_0_24px_rgba(185,28,28,0.45)] transition-opacity duration-200 ${
+                hud.armourBanner.critical
+                  ? 'border-red-500 text-red-100'
+                  : 'border-amber-500/90 text-amber-100'
+              }`}
+              style={{ opacity: Math.min(1, hud.armourBanner.timer / 0.45) }}
+            >
+              <div
+                className={`font-display text-sm sm:text-base font-bold tracking-[0.22em] ${
+                  hud.armourBanner.critical ? 'text-red-400' : 'text-amber-300'
+                }`}
+              >
+                ⚠ {hud.armourBanner.title}
+              </div>
+              <div className="text-[11px] font-mono-tech tracking-wider text-zinc-200 mt-0.5">
+                {hud.armourBanner.subtitle}
+              </div>
+            </div>
+          )}
+
           {hud.radioBanner && (
             <div className="max-w-lg px-4 py-1.5 text-center border-b border-red-400/35">
               <div className="flex items-center justify-center gap-2 text-[11px] font-mono-tech text-red-300">
@@ -529,6 +613,19 @@ export const GameHud: React.FC<Props> = ({
         {/* Top-Right Quick Actions, Minimalist Radar & Face Cam Tab */}
         <div className="flex flex-col items-end gap-2">
           <div className="flex flex-wrap items-center justify-end gap-1.5 pointer-events-auto">
+            {onToggleThirdPerson && (
+              <button
+                onClick={onToggleThirdPerson}
+                className={`px-2.5 py-1 text-[11px] font-mono-tech flex items-center gap-1.5 transition-colors cursor-pointer border-b ${
+                  hud.thirdPersonView
+                    ? 'bg-sky-950/70 border-sky-400 text-sky-100'
+                    : 'bg-black/25 hover:bg-black/50 border-zinc-400/40 text-zinc-200'
+                }`}
+              >
+                <User className="w-3.5 h-3.5" />
+                <span>{hud.thirdPersonView ? '[T] 3RD' : '[T] 1ST'}</span>
+              </button>
+            )}
             <button
               onClick={onToggleFaceCam}
               className={`px-2.5 py-1 text-[11px] font-mono-tech flex items-center gap-1.5 transition-colors cursor-pointer border-b ${
@@ -558,6 +655,14 @@ export const GameHud: React.FC<Props> = ({
               >
                 <BookOpen className="w-3.5 h-3.5" />
                 <span>[K] DB</span>
+              </button>
+            )}
+            {onOpenAdminMenu && (
+              <button
+                onClick={onOpenAdminMenu}
+                className="bg-amber-950/70 hover:bg-amber-900 border-b border-amber-400 px-2.5 py-1 text-[11px] font-mono-tech text-amber-200 flex items-center gap-1.5 transition-colors cursor-pointer font-bold"
+              >
+                <span>[V] ADMIN</span>
               </button>
             )}
             <button
@@ -627,8 +732,25 @@ export const GameHud: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* Center Dynamic Reticle, Hitmarker & Reload */}
+      {/* Directional Damage Indicator & Center Dynamic Reticle */}
       <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center">
+        {hud.damageFlash > 0.04 &&
+          hud.hurtDirectionDeg !== null &&
+          hud.hurtDirectionDeg !== undefined && (
+            <div
+              className="absolute w-32 h-32 pointer-events-none"
+              style={{
+                opacity: Math.min(0.95, hud.damageFlash * 1.45),
+                transform: `rotate(${hud.hurtDirectionDeg}deg)`,
+              }}
+            >
+              <div
+                className="mx-auto w-8 h-3 bg-gradient-to-b from-red-500 to-transparent border-t-2 border-red-300 shadow-[0_0_12px_rgba(239,68,68,0.85)]"
+                style={{ clipPath: 'polygon(50% 0%, 100% 100%, 0% 100%)' }}
+              />
+            </div>
+          )}
+
         {!hud.isSniperAds && (
           <div className="relative w-12 h-12 flex items-center justify-center">
             <div className="w-1 h-1 rounded-full bg-zinc-100/90" />
@@ -671,6 +793,12 @@ export const GameHud: React.FC<Props> = ({
               className="h-1 bg-amber-400 transition-all duration-75"
               style={{ width: `${Math.round(hud.reloadProgress * 100)}%` }}
             />
+          </div>
+        )}
+
+        {(hud.knockdownTimer ?? 0) > 0 && (
+          <div className="mt-4 px-2.5 py-0.5 bg-red-950/85 border border-red-500/80 text-[10px] font-mono-tech tracking-[0.2em] text-red-200 font-semibold">
+            KNOCKDOWN STAGGER
           </div>
         )}
       </div>
@@ -726,6 +854,12 @@ export const GameHud: React.FC<Props> = ({
             <span>·</span>
             <span>SHIFT SPRINT</span>
             <span>·</span>
+            <span>C CROUCH</span>
+            <span>·</span>
+            <span>X CRAWL</span>
+            <span>·</span>
+            <span>SPACE VAULT</span>
+            <span>·</span>
             <span>E INTERACT</span>
             <span>·</span>
             <span>R RELOAD</span>
@@ -733,16 +867,58 @@ export const GameHud: React.FC<Props> = ({
             <span>V MELEE</span>
             <span>·</span>
             <span>Q ABILITY</span>
-            <span>·</span>
-            <span>K DATABASE</span>
           </div>
         </div>
       )}
 
       {/* Bottom HUD Corners: Minimalist Vitals (Left) & Weapon/Ability (Right) */}
       <div className="fixed bottom-0 left-0 right-0 p-4 sm:p-5 flex items-end justify-between gap-4 pointer-events-none">
-        {/* Bottom-Left Transparent Vitals */}
-        <div className="w-56 sm:w-64 space-y-1.5 tabular-nums border-l-2 border-red-500/75 pl-3">
+        {/* Bottom-Left Transparent Vitals + Operative Quip + Stance */}
+        <div className="w-60 sm:w-72 space-y-2 tabular-nums">
+          {hud.operativeQuip && (
+            <div
+              className="bg-[#07090d]/85 border border-zinc-700/80 border-l-2 px-3 py-2 shadow-[0_4px_18px_rgba(0,0,0,0.65)]"
+              style={{ borderLeftColor: hud.operativeQuip.accentColor || charDef.visorColor }}
+            >
+              <div
+                className="text-[10px] font-mono-tech font-bold tracking-[0.18em]"
+                style={{ color: hud.operativeQuip.accentColor || charDef.visorColor }}
+              >
+                {hud.operativeQuip.speaker} // VOICE COMMS
+              </div>
+              <p
+                className={`text-zinc-100 mt-0.5 leading-snug ${
+                  settings.largeHudText ? 'text-sm' : 'text-xs'
+                }`}
+              >
+                "{hud.operativeQuip.text}"
+              </p>
+            </div>
+          )}
+
+          <div className="w-56 sm:w-64 space-y-1.5 border-l-2 border-red-500/75 pl-3">
+            {(hud.isVaulting || hud.isCrawling || hud.isCrouching || (hud.playerWear ?? 0) >= 0.2) && (
+              <div className="flex items-center gap-2 text-[10px] font-mono-tech tracking-wider">
+                {hud.isVaulting ? (
+                  <span className="px-1.5 py-0.5 bg-sky-950/80 border border-sky-500/70 text-sky-200 font-semibold">
+                    VAULTING
+                  </span>
+                ) : hud.isCrawling ? (
+                  <span className="px-1.5 py-0.5 bg-amber-950/80 border border-amber-500/70 text-amber-200 font-semibold">
+                    PRONE CRAWL [X]
+                  </span>
+                ) : hud.isCrouching ? (
+                  <span className="px-1.5 py-0.5 bg-zinc-900/85 border border-zinc-600/70 text-zinc-200">
+                    CROUCH [C]
+                  </span>
+                ) : null}
+                {(hud.playerWear ?? 0) >= 0.2 && (
+                  <span className="text-red-300/85">
+                    SUIT WEAR {Math.round((hud.playerWear ?? 0) * 100)}%
+                  </span>
+                )}
+              </div>
+            )}
           <div className="flex items-center justify-between text-xs font-mono-tech">
             <span className="flex items-center gap-1.5 text-zinc-200">
               <span ref={heartIconRef} className="inline-flex">
@@ -784,8 +960,13 @@ export const GameHud: React.FC<Props> = ({
 
           <div className="flex items-center justify-between text-[11px] font-mono-tech">
             <span className="flex items-center gap-1.5 text-zinc-300">
-              <Shield className="w-3 h-3 text-sky-400" />
+              <Shield className={`w-3 h-3 ${hud.bodyArmourLost ? 'text-red-500' : 'text-sky-400'}`} />
               <span>ARMOR</span>
+              {hud.bodyArmourLost && (
+                <span className="px-1 py-0.2 bg-red-950/90 border border-red-500/80 text-[9px] text-red-300 font-bold tracking-wider">
+                  BODY ARMOUR LOST
+                </span>
+              )}
             </span>
             <span className="text-zinc-200">
               {hud.armor} / {hud.maxArmor}
@@ -793,10 +974,41 @@ export const GameHud: React.FC<Props> = ({
           </div>
           <div className="w-full h-1 bg-black/45 overflow-hidden">
             <div
-              className="h-full bg-sky-400 transition-all duration-100"
-              style={{ width: `${Math.max(0, (hud.armor / hud.maxArmor) * 100)}%` }}
+              className={`h-full transition-all duration-100 ${
+                hud.bodyArmourLost ? 'bg-red-500' : 'bg-sky-400'
+              }`}
+              style={{ width: `${Math.max(0, (hud.armor / Math.max(1, hud.maxArmor)) * 100)}%` }}
             />
           </div>
+
+          {hud.armourPieces && (
+            <div className="grid grid-cols-7 gap-1 pt-0.5 tabular-nums">
+              {ARMOUR_HUD_ORDER.map(({ id, short }) => {
+                const p = hud.armourPieces?.[id];
+                if (!p) return null;
+                const broken = p.destructible && p.stage !== 'intact';
+                const boxColor = broken
+                  ? 'border-red-600/85 bg-red-950/70 text-red-300'
+                  : p.damageTier === 'cracked'
+                    ? 'border-orange-500/70 bg-orange-950/40 text-orange-300'
+                    : p.damageTier === 'dented'
+                      ? 'border-amber-500/60 bg-amber-950/35 text-amber-200'
+                      : 'border-zinc-700/70 bg-black/45 text-sky-200';
+                return (
+                  <div
+                    key={id}
+                    className={`border px-0.5 py-0.5 text-center leading-tight ${boxColor}`}
+                    title={`${p.label}: ${broken ? 'DESTROYED' : `${p.pct}%`}`}
+                  >
+                    <div className="text-[8px] font-mono-tech opacity-80 truncate">{short}</div>
+                    <div className="text-[9px] font-mono-tech font-bold">
+                      {broken ? 'LOST' : `${p.pct}%`}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           <div className="flex items-center justify-between text-[10px] font-mono-tech text-zinc-300/90">
             <span>STAMINA {hud.stamina}%</span>
@@ -816,10 +1028,16 @@ export const GameHud: React.FC<Props> = ({
               style={{ width: `${Math.max(0, Math.min(100, hud.stamina))}%` }}
             />
           </div>
+          </div>
         </div>
 
-        {/* Bottom-Right Transparent Weapon & Ammo */}
+        {/* Bottom-Right Transparent Weapon & Ability */}
         <div className="w-56 sm:w-64 space-y-1 text-right tabular-nums border-r-2 border-amber-400/70 pr-3">
+          {hud.turretActive && (
+            <div className="inline-block px-2 py-0.5 mb-0.5 bg-orange-950/80 border border-orange-500/80 text-[10px] font-mono-tech text-orange-200 font-semibold">
+              SENTRY TURRET · {(hud.turretRemaining ?? 0).toFixed(1)}s
+            </div>
+          )}
           <div className="text-[10px] font-mono-tech text-zinc-300 tracking-wider">
             {weaponDef.category} · SLOT {hud.activeSlot + 1}
           </div>

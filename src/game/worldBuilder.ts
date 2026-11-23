@@ -90,7 +90,8 @@ export type InteractableKind =
   | 'hazard_switch'
   | 'pump_switch'
   | 'ending_console'
-  | 'educational_scan';
+  | 'educational_scan'
+  | 'npc_ally';
 
 export interface InteractableObject {
   id: string;
@@ -104,6 +105,7 @@ export interface InteractableObject {
   puzzleId?: string;
   educationId?: string;
   scannedOnce?: boolean;
+  npcId?: 'raven_09' | 'vex';
   secretId?: string;
   secretTitle?: string;
   endingId?: EndingId;

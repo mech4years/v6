@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { MONSTER_PROFILES } from './monsterAI';
 import { EnemyModelRefs } from './models';
 import {
+  CorpseInfectionStage,
   EnemyAIState,
   EnemyType,
   MonsterAnimStateName,
@@ -224,6 +225,12 @@ export interface MonsterAnimUpdateParams {
   escalatorSpeed?: number;
   verticalVel?: number;
   grounded?: boolean;
+  isHesitating?: boolean;
+  hesitationProgress?: number;
+  formerWeaponRecoil?: number;
+  formerReloading?: boolean;
+  formerActiveSlot?: 0 | 1;
+  formerIlluminated?: boolean;
 }
 
 function updateMonsterEyes(
@@ -783,6 +790,13 @@ export function updateMonsterAnimations(
       targetTorsoRoll += 0.16;
       targetBodyBob -= 0.08;
     }
+    if (type === 'the_former' && refs.formerRig) {
+      const lSide = refs.formerRig.limpSide;
+      const dragPhase = Math.max(0, Math.sin(anim.stridePhase));
+      targetTorsoRoll += lSide * (0.14 + dragPhase * 0.12);
+      targetTorsoPitch += 0.12 + dragPhase * 0.06;
+      targetBodyBob -= 0.055 * dragPhase;
+    }
     targetJawOpen = 0.15 + anim.runBlend * 0.35;
   } else {
     // Idle / Escalator ride breathing + subtle disturbing muscular twitches
@@ -1026,18 +1040,26 @@ export function updateMonsterAnimations(
       : type === 'crawler' || type === 'hollow_dweller'
         ? s * (1 + anim.runBlend * 0.25)
         : s;
-    const limpFactor = legDamaged && i % 2 === 1 ? 0.55 : 1.0;
+    const isFormerLimpLeg =
+      type === 'the_former' &&
+      refs.formerRig &&
+      ((refs.formerRig.limpSide < 0 && i === 0) || (refs.formerRig.limpSide > 0 && i === 1));
+    const limpFactor = isFormerLimpLeg ? 0.38 : legDamaged && i % 2 === 1 ? 0.55 : 1.0;
 
     let targetHip =
       anim.animState === 'HIDING'
         ? leg.baseHipX - 0.35
-        : leg.baseHipX + gaitWave * maxAmp * limpFactor + (onStairs && anim.smoothedSlopePitch > 0.08 ? -0.14 : 0);
+        : isFormerLimpLeg
+          ? leg.baseHipX + gaitWave * maxAmp * 0.38 + 0.14
+          : leg.baseHipX + gaitWave * maxAmp * limpFactor + (onStairs && anim.smoothedSlopePitch > 0.08 ? -0.14 : 0);
     const kneeLift =
       Math.max(0, -c) * maxAmp * (type === 'crawler' ? 1.85 : 1.48) * stairLiftBonus * limpFactor;
     let targetKnee =
       anim.animState === 'HIDING'
         ? leg.baseKneeX + 0.65
-        : leg.baseKneeX + kneeLift + (onStairs ? 0.12 : 0);
+        : isFormerLimpLeg
+          ? leg.baseKneeX + 0.24 + Math.max(0, s) * 0.14
+          : leg.baseKneeX + kneeLift + (onStairs ? 0.12 : 0);
 
     if (airborne) {
       targetHip = leg.baseHipX - 0.24;
@@ -1074,14 +1096,36 @@ export function updateMonsterAnimations(
     const jitter = (i === 1 ? malfunc : 0) + clawTwitch * side;
     const stairBrace = onStairs || onEscalator ? -0.14 : 0;
 
-    const targetShoulderX =
+    let targetShoulderX =
       arm.baseShoulderX + swing + atkS + dmgRecoil + bossIntroLift + jitter + shoulderBreathHeave + stairBrace;
-    const targetElbowX =
+    let targetElbowX =
       arm.baseElbowX +
       Math.cos(anim.stridePhase + arm.phaseOffset) * maxAmp * 0.35 +
       atkE -
       Math.abs(dmgRecoil) * 0.35 -
       anim.muscleTension * 0.12;
+
+    if (type === 'the_former' && refs.formerRig) {
+      const recoilKick = params.formerWeaponRecoil ?? 0;
+      const isReloading = Boolean(params.formerReloading);
+      const hesitating = Boolean(params.isHesitating);
+      if (side === 1) {
+        // Weapon-bearing arm aims toward player, lowers slightly during hesitation, kicks on burst
+        const aimAngle =
+          aiState === 'ATTACK' || aiState === 'CHASE'
+            ? hesitating
+              ? -0.22 + Math.sin(time * 7.5) * 0.03
+              : -0.92 - recoilKick * 0.42 + (isReloading ? 0.36 : 0)
+            : -0.35 + Math.sin(time * 1.8) * 0.04;
+        targetShoulderX = aimAngle + atkS + dmgRecoil;
+        targetElbowX = hesitating ? -0.42 : -0.58 - recoilKick * 0.25 + (isReloading ? -0.3 : 0) + atkE;
+      } else {
+        // Off-arm twitches / hangs asymmetrically or supports reload
+        targetShoulderX =
+          (isReloading ? -0.78 + Math.sin(time * 8) * 0.15 : -0.18 + swing * 1.15) + atkS + dmgRecoil;
+        targetElbowX = (isReloading ? -0.82 : -0.45) + atkE;
+      }
+    }
 
     arm.shoulder.rotation.x = THREE.MathUtils.damp(arm.shoulder.rotation.x, targetShoulderX, 13, dt);
     arm.shoulder.rotation.z = THREE.MathUtils.damp(
@@ -1102,6 +1146,10 @@ export function updateMonsterAnimations(
         const part = refs.rotatableArmor[i];
         if (type === 'drowned_machine' || type === 'origin') {
           part.rotation.z += dt * (aiState === 'ATTACK' ? 2.6 : 0.9);
+        } else if (type === 'harvester') {
+          const spinRate = aiState === 'ATTACK' ? 8.5 : aiState === 'CHASE' ? 5.0 : 1.8;
+          if (i === 0) part.rotation.z += dt * spinRate * 0.45;
+          else part.rotation.x += dt * spinRate;
         } else if (type === 'helios_unit') {
           part.rotation.z =
             (i === 0 ? 0.28 : -0.28) + Math.sin(time * 3.5 + i * Math.PI) * (aiState === 'ATTACK' ? 0.16 : 0.05);
@@ -1204,6 +1252,18 @@ export function updateMonsterAnimations(
         desiredPitch = -0.35;
       }
 
+      // Eerie recognition tilt & sporadic infected spasms for THE FORMER
+      if (type === 'the_former') {
+        if (params.isHesitating) {
+          const hProg = params.hesitationProgress ?? 0.5;
+          desiredRoll = 0.34 * Math.sin(Math.min(1, hProg * 1.4) * (Math.PI * 0.5)) + Math.sin(time * 24) * 0.02;
+          desiredPitch = -0.06 + Math.sin(time * 4.2) * 0.03;
+        } else {
+          const snapImpulse = Math.sin(time * 9.7 + position.x) > 0.91 ? Math.sin(time * 41) * 0.24 : 0;
+          desiredRoll += 0.11 * (refs.formerRig?.limpSide ?? 1) + snapImpulse;
+        }
+      }
+
       const headDamp = anim.staggerTimer > 0 ? 22 : weight === 'small' ? 16 : 9;
       anim.headYaw = THREE.MathUtils.damp(anim.headYaw, desiredLocalYaw, headDamp, dt);
       anim.headPitch = THREE.MathUtils.damp(anim.headPitch, desiredPitch, headDamp, dt);
@@ -1215,7 +1275,8 @@ export function updateMonsterAnimations(
     }
 
     if (refs.jawGroup) {
-      refs.jawGroup.rotation.x = 0.24 + anim.jawOpen * 0.6;
+      refs.jawGroup.rotation.x =
+        type === 'the_former' ? 0.04 + anim.jawOpen * 0.42 : 0.24 + anim.jawOpen * 0.6;
     }
 
     if (refs.facePlates && refs.facePlates.length > 0) {
@@ -1249,5 +1310,229 @@ export function updateMonsterAnimations(
     refs.tendrils.forEach((td) => {
       td.mesh.rotation.x = td.baseRotX + Math.sin(time * 5.2 + td.phaseOffset) * 0.24;
     });
+
+    if (type === 'the_former' && refs.formerRig) {
+      updateFormerInfectionVisuals(
+        refs,
+        1.0,
+        time,
+        Boolean(params.isHesitating),
+        Boolean(params.formerIlluminated)
+      );
+      if (params.formerActiveSlot !== undefined) {
+        const showSec = params.formerActiveSlot === 1;
+        refs.formerRig.primaryWeaponGroup.visible = !showSec;
+        if (showSec) {
+          refs.formerRig.secondaryWeaponGroup.visible = true;
+        }
+      }
+    }
+  }
+}
+
+export function updateFormerInfectionVisuals(
+  refs: EnemyModelRefs,
+  infectionProgress: number,
+  time: number,
+  hesitating: boolean,
+  illuminated: boolean
+): void {
+  const rig = refs.formerRig;
+  if (!rig) return;
+  const p = THREE.MathUtils.clamp(infectionProgress, 0, 1);
+
+  // Necrotic skin pale shift + glowing veins & eyes
+  const skinShift = THREE.MathUtils.clamp((p - 0.18) / 0.62, 0, 1);
+  rig.skinMat.color.copy(rig.healthySkinColor).lerp(rig.necroticSkinColor, skinShift);
+  rig.skinMat.emissiveIntensity = skinShift * (0.28 + Math.sin(time * 3.1) * 0.08);
+
+  const veinReveal = THREE.MathUtils.clamp((p - 0.22) / 0.55, 0, 1);
+  const pulse = 0.82 + Math.sin(time * (hesitating ? 10 : 4.2)) * 0.25;
+  const flare = hesitating ? 1.9 : 1.0;
+  rig.veinMat.opacity = veinReveal * 0.95;
+  rig.veinMat.emissiveIntensity = veinReveal * (1.8 + p * 1.4) * pulse * flare;
+  for (let i = 0; i < rig.veinMeshes.length; i++) {
+    rig.veinMeshes[i].visible = veinReveal > 0.02;
+  }
+
+  const eyeReveal = THREE.MathUtils.clamp((p - 0.28) / 0.4, 0, 1);
+  rig.eyeGlowMat.emissiveIntensity = eyeReveal * (2.2 * pulse * flare);
+  rig.eyeGlowMat.emissive.setHex(hesitating ? 0xf97316 : 0xdc2626);
+
+  // Visor flickers off as host infection hijacks eyes
+  rig.visorMat.emissiveIntensity = Math.max(0.25, 1.5 - p * 1.1) + Math.sin(time * 22) * 0.15 * p;
+
+  // Organic joint/neck/chest/face tumor growths sprout gradually
+  const growthReveal = THREE.MathUtils.clamp((p - 0.34) / 0.52, 0, 1);
+  rig.tumorMat.emissiveIntensity = 0.2 + growthReveal * 1.45 * pulse;
+  for (let i = 0; i < rig.tumorMeshes.length; i++) {
+    const tm = rig.tumorMeshes[i];
+    const staggered = THREE.MathUtils.clamp(growthReveal * 1.35 - (i % 4) * 0.12, 0, 1);
+    tm.visible = staggered > 0.02;
+    if (tm.visible) {
+      tm.scale.setScalar(0.15 + staggered * 0.85 * (1 + Math.sin(time * 3.8 + i) * 0.06));
+    }
+  }
+
+  // Procedural slithering tendrils emerge & crawl along limbs/torso toward chest & head
+  const tendrilReveal = THREE.MathUtils.clamp((p - 0.36) / 0.5, 0, 1);
+  const crawlSpeed = hesitating ? 7.8 : 4.4;
+  for (let i = 0; i < rig.slitherTendrils.length; i++) {
+    const td = rig.slitherTendrils[i];
+    td.root.visible = tendrilReveal > 0.02;
+    if (!td.root.visible) continue;
+    td.root.scale.setScalar(0.18 + tendrilReveal * 0.82);
+    td.root.rotation.x = td.baseRotX + Math.sin(time * crawlSpeed + td.phaseOffset) * 0.18;
+    td.root.rotation.z = td.baseRotZ + Math.cos(time * crawlSpeed * 0.8 + td.phaseOffset) * 0.15;
+    for (let s = 0; s < td.segments.length; s++) {
+      const wave = Math.sin(time * crawlSpeed - s * 1.15 + td.phaseOffset);
+      td.segments[s].rotation[td.convergeAxis] = wave * (0.24 + s * 0.08) * (hesitating ? 1.45 : 1.0);
+    }
+  }
+
+  // Black & dark-crimson spore particle cloud (light-reactive to player flashlight)
+  const sporeReveal = THREE.MathUtils.clamp((p - 0.3) / 0.5, 0, 1);
+  rig.sporePoints.visible = sporeReveal > 0.03;
+  if (rig.sporePoints.visible) {
+    rig.sporeMat.opacity = sporeReveal * (illuminated ? 0.78 : 0.42);
+    rig.sporeMat.color.setHex(illuminated ? 0x991b1b : 0x16070a);
+    rig.sporeMat.size = illuminated ? 0.11 : 0.08;
+    const posAttr = rig.sporePoints.geometry.attributes.position as THREE.BufferAttribute;
+    const base = rig.sporeBaseOffsets;
+    const speed = p > 0.78 ? 1.9 : 1.1;
+    for (let i = 0; i < posAttr.count; i++) {
+      const bx = base[i * 3];
+      const by = base[i * 3 + 1];
+      const bz = base[i * 3 + 2];
+      const swirl = time * speed + i * 0.45;
+      const sx = bx + Math.sin(swirl) * 0.14;
+      const sz = bz + Math.cos(swirl * 0.9) * 0.14;
+      const sy = ((by + time * 0.28 + i * 0.07) % 1.85) + 0.1;
+      posAttr.setXYZ(i, sx, sy, sz);
+    }
+    posAttr.needsUpdate = true;
+  }
+}
+
+export function updateInfectedCorpseAnimation(
+  refs: EnemyModelRefs,
+  stage: CorpseInfectionStage,
+  stageLocalProgress: number,
+  infectionProgress: number,
+  time: number,
+  dt: number,
+  illuminated: boolean
+): void {
+  const rig = refs.formerRig;
+  if (!rig) return;
+
+  updateFormerInfectionVisuals(refs, infectionProgress, time, stage === 'screaming_rise', illuminated);
+
+  // Base supine collapsed pose on ground -> pushes upward violently during 'screaming_rise'
+  let targetRootRotX = -Math.PI / 2 + 0.08;
+  let targetRootPosY = 0.22;
+  let targetRootRoll = 0.08 * rig.limpSide;
+  let torsoTwist = 0;
+  let headYaw = 0.18 * rig.limpSide;
+  let headPitch = 0.12;
+  let headRoll = 0.12 * rig.limpSide;
+  let fingerCurlL = 0.18;
+  let fingerCurlR = 0.25;
+  let legJerkL = 0;
+  let legJerkR = 0;
+  let armSpasmL = 0;
+  let armSpasmR = 0;
+
+  if (stage === 'still') {
+    fingerCurlL = 0.15;
+    fingerCurlR = 0.22;
+  } else if (stage === 'twitching') {
+    const escalation = 0.35 + stageLocalProgress * 0.65;
+    const fingerPulse = Math.max(0, Math.sin(time * 9.5)) * escalation;
+    fingerCurlL = 0.2 + fingerPulse * 1.15;
+    fingerCurlR = 0.25 + Math.max(0, Math.sin(time * 11.2 + 1.3)) * escalation * 1.2;
+
+    const legImpulse = Math.sin(time * 7.4) > 0.72 ? Math.sin(time * 24) * 0.42 * escalation : 0;
+    legJerkL = legImpulse;
+    legJerkR = Math.sin(time * 6.1 + 2.0) > 0.76 ? Math.sin(time * 21) * 0.35 * escalation : 0;
+
+    headYaw = Math.sin(time * 2.1) * 0.36 * escalation;
+    headRoll = Math.sin(time * 4.8) * 0.26 * escalation;
+    torsoTwist = Math.sin(time * 8.2) > 0.65 ? Math.sin(time * 22) * 0.14 * escalation : 0;
+    armSpasmL = Math.sin(time * 13) * 0.22 * escalation;
+    armSpasmR = Math.cos(time * 10.5) * 0.18 * escalation;
+  } else if (stage === 'infecting') {
+    const intensity = 0.55 + stageLocalProgress * 0.45;
+    const spasmWave = Math.sin(time * 15) * 0.5 + 0.5;
+    fingerCurlL = 0.65 + spasmWave * 0.75 * intensity;
+    fingerCurlR = 0.7 + (1 - spasmWave) * 0.75 * intensity;
+
+    targetRootPosY = 0.23 + Math.max(0, Math.sin(time * 5.6)) * 0.08 * intensity;
+    torsoTwist = Math.sin(time * 12) * 0.22 * intensity;
+    headYaw = Math.sin(time * 4.2) * 0.52 * intensity;
+    headPitch = -0.18 + Math.sin(time * 9.8) * 0.24 * intensity;
+    headRoll = Math.cos(time * 6.5) * 0.36 * intensity;
+
+    legJerkL = Math.sin(time * 8.8) * 0.38 * intensity;
+    legJerkR = Math.cos(time * 9.4) * 0.36 * intensity;
+    armSpasmL = -0.35 + Math.sin(time * 14) * 0.42 * intensity;
+    armSpasmR = -0.45 + Math.cos(time * 13) * 0.35 * intensity;
+  } else if (stage === 'screaming_rise') {
+    // Smooth agonizing struggle pulling self up with weapon
+    const riseEase = Math.pow(THREE.MathUtils.clamp(stageLocalProgress, 0, 1), 1.3);
+    targetRootRotX = THREE.MathUtils.lerp(-Math.PI / 2 + 0.1, 0.08, riseEase);
+    targetRootPosY = THREE.MathUtils.lerp(0.24, 0.0, riseEase);
+    targetRootRoll = Math.sin(time * 11) * (1 - riseEase) * 0.18 + rig.limpSide * 0.14 * riseEase;
+
+    headPitch = -0.55 * (1 - riseEase * 0.6) + Math.sin(time * 19) * 0.14;
+    headYaw = Math.sin(time * 14) * 0.26 * (1 - riseEase * 0.5);
+    headRoll = rig.limpSide * 0.24;
+    fingerCurlL = 1.15;
+    fingerCurlR = 1.25;
+    armSpasmL = THREE.MathUtils.lerp(-0.85, -0.22, riseEase);
+    armSpasmR = THREE.MathUtils.lerp(-1.15, -0.78, riseEase);
+    legJerkL = (1 - riseEase) * -0.45;
+    legJerkR = (1 - riseEase) * -0.35;
+  }
+
+  rig.bodyRoot.rotation.x = THREE.MathUtils.damp(rig.bodyRoot.rotation.x, targetRootRotX, 9, dt);
+  rig.bodyRoot.rotation.z = THREE.MathUtils.damp(rig.bodyRoot.rotation.z, targetRootRoll, 9, dt);
+  rig.bodyRoot.position.y = THREE.MathUtils.damp(rig.bodyRoot.position.y, targetRootPosY, 9, dt);
+
+  if (refs.torsoPulse) {
+    refs.torsoPulse.rotation.z = THREE.MathUtils.damp(refs.torsoPulse.rotation.z, torsoTwist, 12, dt);
+    const heave = 1 + Math.sin(time * (stage === 'still' ? 1.5 : 8.5)) * (stage === 'still' ? 0.01 : 0.045);
+    refs.torsoPulse.scale.set(heave, 1, heave);
+  }
+  if (refs.headGroup) {
+    refs.headGroup.rotation.y = THREE.MathUtils.damp(refs.headGroup.rotation.y, headYaw, 11, dt);
+    refs.headGroup.rotation.x = THREE.MathUtils.damp(refs.headGroup.rotation.x, headPitch, 11, dt);
+    refs.headGroup.rotation.z = THREE.MathUtils.damp(refs.headGroup.rotation.z, headRoll, 11, dt);
+  }
+  if (refs.legRigs.length >= 2) {
+    refs.legRigs[0].hip.rotation.x = THREE.MathUtils.damp(refs.legRigs[0].hip.rotation.x, legJerkL, 12, dt);
+    refs.legRigs[0].knee.rotation.x = THREE.MathUtils.damp(refs.legRigs[0].knee.rotation.x, Math.max(0, -legJerkL * 1.1), 12, dt);
+    refs.legRigs[1].hip.rotation.x = THREE.MathUtils.damp(refs.legRigs[1].hip.rotation.x, legJerkR, 12, dt);
+    refs.legRigs[1].knee.rotation.x = THREE.MathUtils.damp(refs.legRigs[1].knee.rotation.x, Math.max(0, -legJerkR * 1.1), 12, dt);
+  }
+  if (refs.armRigs.length >= 2) {
+    refs.armRigs[0].shoulder.rotation.x = THREE.MathUtils.damp(refs.armRigs[0].shoulder.rotation.x, armSpasmL, 12, dt);
+    refs.armRigs[1].shoulder.rotation.x = THREE.MathUtils.damp(refs.armRigs[1].shoulder.rotation.x, armSpasmR, 12, dt);
+  }
+  for (let i = 0; i < rig.leftFingerGroups.length; i++) {
+    rig.leftFingerGroups[i].rotation.x = THREE.MathUtils.damp(
+      rig.leftFingerGroups[i].rotation.x,
+      -fingerCurlL - (i % 2) * 0.14,
+      16,
+      dt
+    );
+  }
+  for (let i = 0; i < rig.rightFingerGroups.length; i++) {
+    rig.rightFingerGroups[i].rotation.x = THREE.MathUtils.damp(
+      rig.rightFingerGroups[i].rotation.x,
+      -fingerCurlR - (i % 2) * 0.14,
+      16,
+      dt
+    );
   }
 }

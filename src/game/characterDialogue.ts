@@ -14,6 +14,48 @@ export type QuipCategory =
   | 'kill_streak';
 
 const QUIP_LINES: Record<CharacterId, Record<QuipCategory, string[]>> = {
+  god: {
+    deploy: [
+      'Admin session initialized. Sector quarantine parameters cleared.',
+      'Omnipotent authority online. Vaporise all anomalous entities.',
+    ],
+    threat_close: [
+      'Insignificant bio-signature within range. Disintegration ready.',
+      'Hostile approaching admin perimeter.',
+    ],
+    low_ammo: [
+      'Magazines never deplete under admin privileges.',
+      'Quantum feed nominal.',
+    ],
+    hurt: [
+      'Shield matrix absorbs all trauma instantly.',
+      'Zero damage sustained.',
+    ],
+    low_hp: [
+      'HP locked at absolute infinity.',
+      'Biometric failure impossible.',
+    ],
+    generator_repair: [
+      'Power grid instantly synchronized.',
+      'System node forced online.',
+    ],
+    hazard: [
+      'Radiation neutralized by admin shielding.',
+      'Fallout ignored.',
+    ],
+    boss_encounter: [
+      'Apex anomaly detected. Initializing Omni Vaporiser beam.',
+      'Boss entity marked for immediate sector purge.',
+    ],
+    ability_use: [
+      'Admin supremacy asserted across all simulation coordinates!',
+      'Omnipotent pulse active.',
+    ],
+    kill_streak: [
+      'Sector purged.',
+      'Anomalies cleansed from reality.',
+    ],
+  },
   reaper: {
     deploy: [
       'Magazine seated. Watch your corners—metal and flesh alike bleed tonight.',

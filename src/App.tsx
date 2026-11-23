@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  Backpack,
   BookOpen,
   CheckCircle2,
   ChevronRight,
   Crosshair,
+  Eye,
   Film,
   HelpCircle,
   Lock,
@@ -16,6 +18,7 @@ import {
   Unlock,
   UserCheck,
   Users,
+  Volume2,
   Wrench,
 } from 'lucide-react';
 import { MultiplayerLobbyModal } from './components/MultiplayerLobbyModal';
@@ -26,6 +29,7 @@ import { GameHud } from './components/GameHud';
 import { DatapadTab, InventoryDrawer } from './components/InventoryDrawer';
 import { MenuBackground3D } from './components/MenuBackground3D';
 import { OpeningCutscene } from './components/OpeningCutscene';
+import { OperativeIntroCutscene } from './components/OperativeIntroCutscene';
 import { LevelCutsceneViewer } from './components/LevelCutsceneViewer';
 import { CinematicArchiveModal } from './components/CinematicArchiveModal';
 import { PuzzleModal } from './components/PuzzleModal';
@@ -33,6 +37,7 @@ import { ScientificDatabaseModal } from './components/ScientificDatabaseModal';
 import { SettingsModal } from './components/SettingsModal';
 import { TutorialHub } from './components/TutorialHub';
 import { WorkbenchModal } from './components/WorkbenchModal';
+import { AdminSpawnModal } from './components/AdminSpawnModal';
 import { HorrorAudioEngine } from './game/audio';
 import {
   CHARACTER_LIST,
@@ -40,9 +45,11 @@ import {
   DEFAULT_SETTINGS,
   FACTIONS,
   MISSIONS,
+  STORY_CHARACTERS,
   WEAPONS,
   WORLD_REGIONS,
   loadCampaignState,
+  normalizeCharacterId,
   resetCampaignState,
   saveCampaignState,
 } from './game/data';
@@ -59,6 +66,31 @@ import {
 } from './game/types';
 
 const SETTINGS_STORAGE_KEY = 'twhr_settings_v1';
+const SELECTED_CHAR_STORAGE_KEY = 'twhr_selected_char_v1';
+const VIEWED_OP_INTROS_KEY = 'twhr_viewed_op_intros_v1';
+
+function loadSelectedCharacter(): CharacterId {
+  try {
+    return normalizeCharacterId(localStorage.getItem(SELECTED_CHAR_STORAGE_KEY));
+  } catch {
+    return 'reaper';
+  }
+}
+
+function loadViewedOperativeIntros(): CharacterId[] {
+  try {
+    const raw = localStorage.getItem(VIEWED_OP_INTROS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.map((id) => normalizeCharacterId(String(id)));
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return [];
+}
 
 function loadStoredSettings(): GameSettings {
   try {
@@ -85,7 +117,12 @@ function loadCheckpointSave(): CheckpointSave | null {
 
 export default function App() {
   const [screen, setScreen] = useState<GameScreen>('cutscene');
-  const [selectedCharacter, setSelectedCharacter] = useState<CharacterId>('raven');
+  const [selectedCharacter, setSelectedCharacter] = useState<CharacterId>(loadSelectedCharacter);
+  const [viewedOperativeIntros, setViewedOperativeIntros] = useState<CharacterId[]>(
+    loadViewedOperativeIntros
+  );
+  const [showcaseCamMode, setShowcaseCamMode] = useState<'full' | 'face'>('full');
+  const [selectionConfirmText, setSelectionConfirmText] = useState<string | null>(null);
   const [activeMissionId, setActiveMissionId] = useState<string>('mission_01');
   const [settings, setSettings] = useState<GameSettings>(loadStoredSettings);
   const [campaign, setCampaign] = useState<CampaignState>(loadCampaignState);
@@ -110,6 +147,7 @@ export default function App() {
   const [isCoopSession, setIsCoopSession] = useState(false);
   const [activeEducationId, setActiveEducationId] = useState<string | null>(null);
   const [databaseOpen, setDatabaseOpen] = useState(false);
+  const [adminSpawnModalOpen, setAdminSpawnModalOpen] = useState(false);
 
   const gameMountRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<FirstPersonGameEngine | null>(null);
@@ -117,12 +155,56 @@ export default function App() {
   const pendingRestoreRef = useRef<CheckpointSave | null>(null);
   const introModeRef = useRef<'none' | 'cutscene_end' | 'cutscene_skip'>('none');
   const pendingMissionRef = useRef<{ missionId: string; charId: CharacterId } | null>(null);
+  const pendingOpIntroRef = useRef<
+    | {
+        mode: 'launch';
+        missionId: string;
+        charId: CharacterId;
+        introMode: 'none' | 'cutscene_end' | 'cutscene_skip';
+        coopMode?: boolean;
+      }
+    | { mode: 'replay'; returnScreen: GameScreen }
+    | null
+  >(null);
+  const confirmTimerRef = useRef<number | null>(null);
   const isCoopSessionRef = useRef(isCoopSession);
   isCoopSessionRef.current = isCoopSession;
+  const coopSessionInfoRef = useRef<{ sessionId: string; role: 'host' | 'client' }>({
+    sessionId: 'coop_local',
+    role: 'host',
+  });
 
   if (!audioRef.current) {
     audioRef.current = new HorrorAudioEngine();
   }
+
+  const selectCharacter = useCallback((rawId: CharacterId, showConfirm = false) => {
+    const id = normalizeCharacterId(rawId);
+    setSelectedCharacter(id);
+    try {
+      localStorage.setItem(SELECTED_CHAR_STORAGE_KEY, id);
+    } catch {
+      // ignore
+    }
+    if (showConfirm) {
+      setSelectionConfirmText(`OPERATIVE LOCKED IN // ${CHARACTERS[id].callsign}`);
+      if (confirmTimerRef.current) window.clearTimeout(confirmTimerRef.current);
+      confirmTimerRef.current = window.setTimeout(() => setSelectionConfirmText(null), 2200);
+    }
+  }, []);
+
+  const markOperativeIntroViewed = useCallback((charId: CharacterId) => {
+    setViewedOperativeIntros((prev) => {
+      if (prev.includes(charId)) return prev;
+      const next = [...prev, charId];
+      try {
+        localStorage.setItem(VIEWED_OP_INTROS_KEY, JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
 
   const updateCampaign = useCallback((next: CampaignState) => {
     saveCampaignState(next);
@@ -168,30 +250,14 @@ export default function App() {
     setDatabaseOpen(false);
   }, []);
 
-  const launchMission = useCallback(
+  const continueLaunchAfterOpIntro = useCallback(
     (
       missionId: string,
       charId: CharacterId,
-      restore: CheckpointSave | null = null,
-      introMode: 'none' | 'cutscene_end' | 'cutscene_skip' = 'none',
-      coopMode?: boolean
+      introMode: 'none' | 'cutscene_end' | 'cutscene_skip' = 'none'
     ) => {
-      audioRef.current?.unlock();
-      audioRef.current?.playClick(true);
-      stopGameEngine();
-      if (coopMode !== undefined) {
-        setIsCoopSession(coopMode);
-        isCoopSessionRef.current = coopMode;
-      }
-      setActiveMissionId(missionId);
-      setSelectedCharacter(charId);
-      pendingRestoreRef.current = restore;
-      introModeRef.current = introMode;
-      setFinaleInfo(null);
-      setMenuWorkbenchOpen(false);
-
       // Trigger dynamic level introduction cutscene if starting fresh and setting is on
-      if (!restore && introMode === 'none' && settings.cinematicIntros !== false) {
+      if (introMode === 'none' && settings.cinematicIntros !== false) {
         const curDef = MISSIONS.find((m) => m.id === missionId);
         const mNum = curDef?.number ?? 1;
         const introTarget: CutsceneTargetId = `level_${String(mNum).padStart(2, '0')}_intro` as CutsceneTargetId;
@@ -213,23 +279,90 @@ export default function App() {
 
       setScreen('playing');
     },
-    [stopGameEngine, settings.cinematicIntros]
+    [settings.cinematicIntros]
+  );
+
+  const launchMission = useCallback(
+    (
+      missionId: string,
+      charIdRaw: CharacterId,
+      restore: CheckpointSave | null = null,
+      introMode: 'none' | 'cutscene_end' | 'cutscene_skip' = 'none',
+      coopMode?: boolean
+    ) => {
+      const charId = normalizeCharacterId(charIdRaw);
+      audioRef.current?.unlock();
+      audioRef.current?.playClick(true);
+      stopGameEngine();
+      if (coopMode !== undefined) {
+        setIsCoopSession(coopMode);
+        isCoopSessionRef.current = coopMode;
+      }
+      setActiveMissionId(missionId);
+      selectCharacter(charId, false);
+      pendingRestoreRef.current = restore;
+      introModeRef.current = introMode;
+      setFinaleInfo(null);
+      setMenuWorkbenchOpen(false);
+
+      // Play personalized operative intro cinematic on first fresh campaign launch with this operative
+      if (
+        !restore &&
+        settings.cinematicIntros !== false &&
+        !viewedOperativeIntros.includes(charId)
+      ) {
+        markOperativeIntroViewed(charId);
+        pendingOpIntroRef.current = {
+          mode: 'launch',
+          missionId,
+          charId,
+          introMode,
+          coopMode,
+        };
+        setScreen('operative_intro');
+        return;
+      }
+
+      continueLaunchAfterOpIntro(missionId, charId, introMode);
+    },
+    [
+      stopGameEngine,
+      settings.cinematicIntros,
+      viewedOperativeIntros,
+      markOperativeIntroViewed,
+      selectCharacter,
+      continueLaunchAfterOpIntro,
+    ]
+  );
+
+  const replayOperativeIntro = useCallback(
+    (charIdRaw: CharacterId) => {
+      const charId = normalizeCharacterId(charIdRaw);
+      audioRef.current?.unlock();
+      audioRef.current?.playClick(true);
+      stopGameEngine();
+      selectCharacter(charId, false);
+      pendingOpIntroRef.current = { mode: 'replay', returnScreen: 'characters' };
+      setScreen('operative_intro');
+    },
+    [stopGameEngine, selectCharacter]
   );
 
   const launchOpeningCutscene = useCallback(
-    (charId: CharacterId) => {
+    (charIdRaw: CharacterId) => {
+      const charId = normalizeCharacterId(charIdRaw);
       audioRef.current?.unlock();
       audioRef.current?.playClick(true);
       stopGameEngine();
       setIsCoopSession(false);
       isCoopSessionRef.current = false;
       setActiveMissionId('mission_01');
-      setSelectedCharacter(charId);
+      selectCharacter(charId, false);
       pendingRestoreRef.current = null;
       setFinaleInfo(null);
       setScreen('cutscene');
     },
-    [stopGameEngine]
+    [stopGameEngine, selectCharacter]
   );
 
   const handleCutsceneComplete = useCallback(() => {
@@ -239,8 +372,22 @@ export default function App() {
     pendingRestoreRef.current = null;
     introModeRef.current = 'cutscene_end';
     setFinaleInfo(null);
+    if (
+      settings.cinematicIntros !== false &&
+      !viewedOperativeIntros.includes(selectedCharacter)
+    ) {
+      markOperativeIntroViewed(selectedCharacter);
+      pendingOpIntroRef.current = {
+        mode: 'launch',
+        missionId: 'mission_01',
+        charId: selectedCharacter,
+        introMode: 'cutscene_end',
+      };
+      setScreen('operative_intro');
+      return;
+    }
     setScreen('playing');
-  }, [stopGameEngine]);
+  }, [stopGameEngine, settings.cinematicIntros, viewedOperativeIntros, selectedCharacter, markOperativeIntroViewed]);
 
   const handleCutsceneSkip = useCallback(() => {
     audioRef.current?.unlock();
@@ -249,8 +396,22 @@ export default function App() {
     pendingRestoreRef.current = null;
     introModeRef.current = 'cutscene_skip';
     setFinaleInfo(null);
+    if (
+      settings.cinematicIntros !== false &&
+      !viewedOperativeIntros.includes(selectedCharacter)
+    ) {
+      markOperativeIntroViewed(selectedCharacter);
+      pendingOpIntroRef.current = {
+        mode: 'launch',
+        missionId: 'mission_01',
+        charId: selectedCharacter,
+        introMode: 'cutscene_skip',
+      };
+      setScreen('operative_intro');
+      return;
+    }
     setScreen('playing');
-  }, [stopGameEngine]);
+  }, [stopGameEngine, settings.cinematicIntros, viewedOperativeIntros, selectedCharacter, markOperativeIntroViewed]);
 
   useEffect(() => {
     const isGameplay =
@@ -288,6 +449,7 @@ export default function App() {
           recordEducationDiscovery(entryId);
           setActiveEducationId(entryId);
         },
+        onOpenAdminMenu: () => setAdminSpawnModalOpen(true),
         onPauseRequested: () => setScreen('paused'),
         onPlayerDied: () => setScreen('dead'),
         onMissionComplete: (title, summary, stats, endingChoice) => {
@@ -327,7 +489,11 @@ export default function App() {
       introMode,
       campaign
     );
-    engine.setCoopSession(isCoopSessionRef.current);
+    engine.setCoopSession(
+      isCoopSessionRef.current,
+      coopSessionInfoRef.current.sessionId,
+      coopSessionInfoRef.current.role
+    );
     pendingRestoreRef.current = null;
     engineRef.current = engine;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -401,7 +567,9 @@ export default function App() {
     engineRef.current?.requestPointerLock();
   };
 
-  const activeChar = CHARACTERS[selectedCharacter];
+  const activeChar = CHARACTERS[normalizeCharacterId(selectedCharacter)];
+  const primaryOperatives = CHARACTER_LIST.filter((c) => c.isPrimaryRoster);
+  const reserveOperatives = CHARACTER_LIST.filter((c) => !c.isPrimaryRoster);
   const mainChapters = MISSIONS.filter((m) => !m.isBonusArena);
   const completedMainCount = mainChapters.filter((m) =>
     campaign.completedMissionIds.includes(m.id)
@@ -412,6 +580,20 @@ export default function App() {
       ? MISSIONS.find((m) => m.number === currentMissionDef.number + 1 && !m.isBonusArena)
       : undefined;
 
+  const finishOperativeIntro = () => {
+    const pending = pendingOpIntroRef.current;
+    pendingOpIntroRef.current = null;
+    if (!pending) {
+      setScreen('menu');
+      return;
+    }
+    if (pending.mode === 'replay') {
+      setScreen(pending.returnScreen);
+      return;
+    }
+    continueLaunchAfterOpIntro(pending.missionId, pending.charId, pending.introMode);
+  };
+
   return (
     <div className="relative w-full h-full bg-[#060709] text-zinc-100 overflow-hidden">
       {/* Opening 3D Cinematic Cutscene */}
@@ -420,6 +602,16 @@ export default function App() {
           audio={audioRef.current}
           onComplete={handleCutsceneComplete}
           onSkip={handleCutsceneSkip}
+        />
+      )}
+
+      {/* Personalized Operative 3D Intro Cinematic */}
+      {screen === 'operative_intro' && audioRef.current && (
+        <OperativeIntroCutscene
+          characterId={normalizeCharacterId(selectedCharacter)}
+          audio={audioRef.current}
+          onComplete={finishOperativeIntro}
+          onSkip={finishOperativeIntro}
         />
       )}
 
@@ -658,10 +850,10 @@ export default function App() {
         </div>
       )}
 
-      {/* 3D Character Selection Screen */}
+      {/* 3D Personnel Dossier & Character Selection Screen */}
       {screen === 'characters' && (
         <div className="relative z-10 w-full h-full bg-[#06070a] flex flex-col">
-          <header className="flex items-center justify-between px-6 py-4 border-b border-zinc-800">
+          <header className="flex flex-wrap items-center justify-between gap-3 px-6 py-3.5 border-b border-zinc-800 bg-[#080a0e]">
             <button
               onClick={() => setScreen('menu')}
               className="flex items-center gap-2 text-xs font-mono-tech text-zinc-300 hover:text-white cursor-pointer"
@@ -669,70 +861,199 @@ export default function App() {
               <ArrowLeft className="w-4 h-4" />
               <span>BACK TO MENU</span>
             </button>
-            <h2 className="font-display text-lg font-bold tracking-wider">OPERATIVE SELECTION</h2>
-            <button
-              onClick={() => launchMission('mission_01', selectedCharacter, null, 'none', false)}
-              className="px-4 py-2 bg-red-700 hover:bg-red-600 text-xs font-mono-tech font-semibold text-white cursor-pointer"
-            >
-              DEPLOY AS {activeChar.callsign}
-            </button>
+            <div className="text-center">
+              <div className="text-[10px] font-mono-tech tracking-[0.25em] text-red-400">
+                3062 AD // BLACK-SECTOR ROSTER
+              </div>
+              <h2 className="font-display text-lg font-bold tracking-wider">
+                PERSONNEL DOSSIER & OPERATIVE SELECTION
+              </h2>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => replayOperativeIntro(activeChar.id)}
+                className="px-3.5 py-2 border border-zinc-700 hover:border-amber-500 bg-[#0b0d12] text-xs font-mono-tech text-zinc-200 flex items-center gap-1.5 cursor-pointer"
+              >
+                <Film className="w-3.5 h-3.5 text-amber-400" />
+                <span>REPLAY INTRO</span>
+              </button>
+              <button
+                onClick={() => launchMission('mission_01', activeChar.id, null, 'none', false)}
+                className="px-4 py-2 bg-red-700 hover:bg-red-600 text-xs font-mono-tech font-semibold text-white cursor-pointer"
+              >
+                DEPLOY AS {activeChar.callsign}
+              </button>
+            </div>
           </header>
 
           <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 overflow-hidden">
-            <div className="lg:col-span-3 border-r border-zinc-800 p-4 space-y-2 overflow-y-auto bg-[#080a0e]">
-              {CHARACTER_LIST.map((char) => {
-                const selected = char.id === selectedCharacter;
-                return (
-                  <button
-                    key={char.id}
-                    onClick={() => {
-                      audioRef.current?.playClick(true);
-                      setSelectedCharacter(char.id);
-                    }}
-                    className={`w-full text-left p-3.5 border transition-colors cursor-pointer ${
-                      selected
-                        ? 'bg-red-950/60 border-red-600 text-zinc-100'
-                        : 'bg-[#0b0d12] border-zinc-800/90 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-display font-bold tracking-wider text-base">
-                        {char.callsign}
-                      </span>
-                      <span className="font-mono-tech text-[11px] text-red-400">
-                        HP {char.stats.health}
+            {/* Left Roster Column */}
+            <div className="lg:col-span-3 border-r border-zinc-800 p-4 space-y-4 overflow-y-auto bg-[#080a0e]">
+              <div className="space-y-2">
+                <div className="text-[10px] font-mono-tech tracking-[0.22em] text-red-400 border-b border-zinc-800 pb-1">
+                  PRIMARY OPERATIVES (7)
+                </div>
+                {primaryOperatives.map((char) => {
+                  const selected = char.id === activeChar.id;
+                  return (
+                    <button
+                      key={char.id}
+                      onClick={() => {
+                        audioRef.current?.playClick(true);
+                        selectCharacter(char.id, true);
+                      }}
+                      className={`w-full text-left p-3 border transition-colors cursor-pointer relative ${
+                        selected
+                          ? 'bg-red-950/60 border-red-500 text-zinc-100'
+                          : 'bg-[#0b0d12] border-zinc-800/90 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200'
+                      }`}
+                      style={selected ? { borderLeftWidth: '3px', borderLeftColor: char.visorColor } : undefined}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-display font-bold tracking-wider text-sm">
+                          {char.callsign}
+                        </span>
+                        <span className="font-mono-tech text-[10px] text-red-400 tabular-nums">
+                          HP {char.stats.health}
+                        </span>
+                      </div>
+                      <div className="text-[11px] font-mono-tech text-zinc-400 mt-0.5 flex items-center justify-between">
+                        <span>{char.role}</span>
+                        {selected && <span className="text-emerald-400 font-semibold">ACTIVE</span>}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="space-y-2 pt-1">
+                <div className="text-[10px] font-mono-tech tracking-[0.22em] text-zinc-400 border-b border-zinc-800 pb-1">
+                  VANGUARD RESERVES (4)
+                </div>
+                {reserveOperatives.map((char) => {
+                  const selected = char.id === activeChar.id;
+                  return (
+                    <button
+                      key={char.id}
+                      onClick={() => {
+                        audioRef.current?.playClick(true);
+                        selectCharacter(char.id, true);
+                      }}
+                      className={`w-full text-left p-2.5 border transition-colors cursor-pointer ${
+                        selected
+                          ? 'bg-red-950/60 border-red-500 text-zinc-100'
+                          : 'bg-[#0b0d12] border-zinc-800/90 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200'
+                      }`}
+                      style={selected ? { borderLeftWidth: '3px', borderLeftColor: char.visorColor } : undefined}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-display font-bold tracking-wider text-sm">
+                          {char.callsign}
+                        </span>
+                        <span className="font-mono-tech text-[10px] text-zinc-400 tabular-nums">
+                          HP {char.stats.health}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-zinc-500 mt-0.5">{char.role}</div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Story Roster Intel Box */}
+              <div className="border border-zinc-800 bg-[#0b0d12] p-3 space-y-2">
+                <div className="text-[10px] font-mono-tech tracking-[0.2em] text-sky-400">
+                  FIELD ALLIES & THREATS
+                </div>
+                {STORY_CHARACTERS.filter((s) => s.id !== 'wanderer').map((s) => (
+                  <div key={s.id} className="text-[11px] border-t border-zinc-800/80 pt-1.5">
+                    <div className="font-display font-semibold text-zinc-200 flex items-center justify-between">
+                      <span>{s.name}</span>
+                      <span className="text-[9px] font-mono-tech" style={{ color: s.accentColor }}>
+                        {s.role.split(' ')[0].toUpperCase()}
                       </span>
                     </div>
-                    <div className="text-xs text-zinc-400 mt-0.5">{char.role}</div>
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="lg:col-span-5 relative bg-[#07090d] flex flex-col">
-              <CharacterShowcase3D characterId={selectedCharacter} />
-              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-[11px] font-mono-tech text-zinc-400 bg-black/75 px-3 py-1 border border-zinc-800">
-                DRAG TO ROTATE FULL-BODY 3D MODEL
+                    <p className="text-[10px] text-zinc-400 leading-snug mt-0.5">{s.summary}</p>
+                  </div>
+                ))}
               </div>
             </div>
 
-            <div className="lg:col-span-4 border-l border-zinc-800 p-6 overflow-y-auto space-y-5 bg-[#080a0e]">
+            {/* Center 3D Model Showcase */}
+            <div className="lg:col-span-5 relative bg-[#07090d] flex flex-col min-h-[340px]">
+              <CharacterShowcase3D characterId={activeChar.id} cameraMode={showcaseCamMode} />
+
+              <div className="absolute top-3 right-3 flex items-center gap-1.5">
+                <button
+                  onClick={() => setShowcaseCamMode('full')}
+                  className={`px-3 py-1.5 border text-[11px] font-mono-tech flex items-center gap-1.5 cursor-pointer transition-colors ${
+                    showcaseCamMode === 'full'
+                      ? 'bg-red-950/90 border-red-500 text-red-100'
+                      : 'bg-black/80 border-zinc-700 text-zinc-300 hover:border-zinc-500'
+                  }`}
+                >
+                  <UserCheck className="w-3.5 h-3.5" />
+                  <span>FULL BODY</span>
+                </button>
+                <button
+                  onClick={() => setShowcaseCamMode('face')}
+                  className={`px-3 py-1.5 border text-[11px] font-mono-tech flex items-center gap-1.5 cursor-pointer transition-colors ${
+                    showcaseCamMode === 'face'
+                      ? 'bg-red-950/90 border-red-500 text-red-100'
+                      : 'bg-black/80 border-zinc-700 text-zinc-300 hover:border-zinc-500'
+                  }`}
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  <span>FACE CLOSE-UP</span>
+                </button>
+              </div>
+
+              {selectionConfirmText && (
+                <div className="absolute top-3 left-3 px-3 py-1.5 bg-emerald-950/90 border border-emerald-500 text-[11px] font-mono-tech text-emerald-200 tracking-wider">
+                  {selectionConfirmText}
+                </div>
+              )}
+
+              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-[11px] font-mono-tech text-zinc-300 bg-black/80 px-3.5 py-1 border border-zinc-800 whitespace-nowrap">
+                DRAG TO ROTATE · {activeChar.classification || activeChar.role.toUpperCase()}
+              </div>
+            </div>
+
+            {/* Right Personnel Dossier Panel */}
+            <div className="lg:col-span-4 border-l border-zinc-800 p-5 overflow-y-auto space-y-4 bg-[#080a0e]">
               <div>
-                <div className="text-xs font-mono-tech text-red-400">{activeChar.role}</div>
+                <div className="flex items-center justify-between gap-2 text-[11px] font-mono-tech">
+                  <span style={{ color: activeChar.ability.accentColor }}>
+                    {activeChar.classification || activeChar.role.toUpperCase()}
+                  </span>
+                  {activeChar.voiceProfile && (
+                    <span className="flex items-center gap-1 text-zinc-400">
+                      <Volume2 className="w-3 h-3" />
+                      <span>{activeChar.voiceProfile.personalityTag}</span>
+                    </span>
+                  )}
+                </div>
                 <h3 className="font-display text-3xl font-bold tracking-wide text-zinc-100 mt-0.5">
                   {activeChar.callsign}
                 </h3>
-                <p className="text-xs text-zinc-300 mt-2 leading-relaxed">{activeChar.bio}</p>
-                <p className="text-xs text-zinc-500 mt-2 leading-relaxed">
-                  Loadout: {activeChar.appearanceSummary}
+                <p className="text-xs text-zinc-200 mt-2 leading-relaxed">{activeChar.bio}</p>
+                {activeChar.backstory && (
+                  <p className="text-xs text-zinc-400 mt-2 leading-relaxed border-l-2 border-zinc-700 pl-3">
+                    {activeChar.backstory}
+                  </p>
+                )}
+                <p className="text-[11px] text-zinc-500 mt-2 leading-relaxed">
+                  Gear: {activeChar.appearanceSummary}
                 </p>
               </div>
 
-              <div className="space-y-2.5 pt-3 border-t border-zinc-800">
+              {/* 5 Stat Bars */}
+              <div className="space-y-2 pt-3 border-t border-zinc-800 tabular-nums">
                 {[
-                  { label: 'Health', value: activeChar.stats.health, max: 150 },
+                  { label: 'Health', value: activeChar.stats.health, max: 170 },
                   { label: 'Speed', value: activeChar.stats.speed, max: 100 },
-                  { label: 'Armor', value: activeChar.stats.armor, max: 100 },
+                  { label: 'Armor', value: activeChar.stats.armor, max: 120 },
+                  { label: 'Damage', value: activeChar.stats.damage ?? 82, max: 100 },
                   {
                     label: activeChar.stats.specialtyLabel,
                     value: activeChar.stats.specialtyValue,
@@ -746,28 +1067,60 @@ export default function App() {
                     </div>
                     <div className="w-full h-1.5 bg-zinc-900">
                       <div
-                        className="h-full bg-red-600"
-                        style={{ width: `${Math.min(100, (s.value / s.max) * 100)}%` }}
+                        className="h-full transition-all duration-200"
+                        style={{
+                          width: `${Math.min(100, (s.value / s.max) * 100)}%`,
+                          backgroundColor: activeChar.ability.accentColor,
+                        }}
                       />
                     </div>
                   </div>
                 ))}
               </div>
 
-              <div className="border border-zinc-800 bg-[#0b0d12] p-4 space-y-1.5">
+              {/* Equipment List */}
+              {activeChar.equipmentList && activeChar.equipmentList.length > 0 && (
+                <div className="border border-zinc-800 bg-[#0b0d12] p-3.5 space-y-2">
+                  <div className="flex items-center gap-1.5 text-[11px] font-mono-tech text-zinc-400">
+                    <Backpack className="w-3.5 h-3.5 text-amber-400" />
+                    <span>TACTICAL EQUIPMENT MANIFEST</span>
+                  </div>
+                  <ul className="space-y-1 text-xs text-zinc-300">
+                    {activeChar.equipmentList.map((item) => (
+                      <li key={item} className="flex items-center gap-2">
+                        <span
+                          className="w-1.5 h-1.5 shrink-0"
+                          style={{ backgroundColor: activeChar.ability.accentColor }}
+                        />
+                        <span>{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Primary Weapon */}
+              <div className="border border-zinc-800 bg-[#0b0d12] p-3.5 space-y-1">
                 <div className="text-[11px] font-mono-tech text-zinc-400">PRIMARY WEAPON</div>
                 <div className="font-display font-semibold text-zinc-100">
                   {WEAPONS[activeChar.primaryWeapon].name}
                 </div>
-                <div className="text-xs text-zinc-400">
+                <div className="text-xs text-zinc-400 tabular-nums">
                   DMG {WEAPONS[activeChar.primaryWeapon].damage} · MAG{' '}
-                  {WEAPONS[activeChar.primaryWeapon].magSize} · PLUS{' '}
+                  {WEAPONS[activeChar.primaryWeapon].magSize} · SIDEARM{' '}
                   {WEAPONS[campaign.equippedSecondary].name}
                 </div>
               </div>
 
-              <div className="border border-red-900/60 bg-[#12090b] p-4 space-y-1.5">
-                <div className="flex items-center justify-between text-[11px] font-mono-tech text-red-400">
+              {/* Special Ability */}
+              <div
+                className="border bg-[#100b0d] p-3.5 space-y-1.5"
+                style={{ borderColor: `${activeChar.ability.accentColor}66` }}
+              >
+                <div
+                  className="flex items-center justify-between text-[11px] font-mono-tech"
+                  style={{ color: activeChar.ability.accentColor }}
+                >
                   <span>SPECIAL ABILITY [Q]</span>
                   <span>CD {activeChar.ability.cooldown}s</span>
                 </div>
@@ -777,6 +1130,23 @@ export default function App() {
                 <p className="text-xs text-zinc-300 leading-relaxed">
                   {activeChar.ability.description}
                 </p>
+              </div>
+
+              {/* Dossier Action Footer */}
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                <button
+                  onClick={() => selectCharacter(activeChar.id, true)}
+                  className="py-2.5 px-3 border border-emerald-600/80 bg-emerald-950/40 hover:bg-emerald-900/60 text-xs font-mono-tech font-semibold text-emerald-200 cursor-pointer"
+                >
+                  CONFIRM OPERATIVE
+                </button>
+                <button
+                  onClick={() => replayOperativeIntro(activeChar.id)}
+                  className="py-2.5 px-3 border border-amber-600/80 bg-amber-950/40 hover:bg-amber-900/60 text-xs font-mono-tech font-semibold text-amber-200 flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Film className="w-3.5 h-3.5" />
+                  <span>WATCH INTRO</span>
+                </button>
               </div>
             </div>
           </div>
@@ -1013,9 +1383,11 @@ export default function App() {
                 <span>CAMPAIGN</span>
                 <span className="text-zinc-200">12 CHAPTERS + TITANFORGED CRUCIBLE</span>
               </div>
-              <div className="flex justify-between">
+              <div className="flex justify-between gap-4">
                 <span>OPERATIVES</span>
-                <span className="text-zinc-200">RAVEN · GHOST · BRUTE · NYX · ZERO</span>
+                <span className="text-zinc-200 text-right">
+                  REAPER · GHOST · TITAN · PATCH · PHANTOM · ENGINEER · WANDERER
+                </span>
               </div>
               <div className="flex justify-between">
                 <span>ENDINGS UNLOCKED</span>
@@ -1075,6 +1447,11 @@ export default function App() {
               setInventoryOpen(true);
             }}
             onToggleGeigerMute={() => engineRef.current?.toggleGeigerMute()}
+            onToggleThirdPerson={() => engineRef.current?.toggleThirdPersonView()}
+            onOpenAdminMenu={() => {
+              engineRef.current?.setPaused(true);
+              setAdminSpawnModalOpen(true);
+            }}
             onLockPointer={() => engineRef.current?.requestPointerLock()}
             onPause={() => {
               engineRef.current?.setPaused(true);
@@ -1123,8 +1500,31 @@ export default function App() {
           campaign={campaign}
           characterId={selectedCharacter}
           audio={audioRef.current}
+          armourPieces={hud.armourPieces}
+          onRepairArmour={() => engineRef.current?.repairBodyArmour()}
           onUpdateCampaign={updateCampaign}
           onClose={() => engineRef.current?.closeWorkbench(loadCampaignState())}
+        />
+      )}
+
+      {/* Admin Spawn & Developer Console Modal */}
+      {screen === 'playing' && adminSpawnModalOpen && (
+        <AdminSpawnModal
+          isGodChar={selectedCharacter === 'god'}
+          noclipActive={engineRef.current?.noclipActive || false}
+          godModeActive={engineRef.current?.godModeActive || false}
+          onToggleNoclip={() => engineRef.current?.toggleNoclip()}
+          onToggleGodMode={() => engineRef.current?.toggleGodMode()}
+          onSpawnEnemy={(type) => engineRef.current?.spawnEnemy(type)}
+          onSpawnWeapon={(wId) => engineRef.current?.spawnWeapon(wId)}
+          onSpawnItem={(kind, count) => engineRef.current?.spawnItem(kind, count)}
+          onInstantCompleteObjective={() => engineRef.current?.instantCompleteObjective()}
+          onTeleport={(x, y, z) => engineRef.current?.teleportTo(x, y, z)}
+          onClose={() => {
+            setAdminSpawnModalOpen(false);
+            engineRef.current?.setPaused(false);
+            engineRef.current?.requestPointerLock();
+          }}
         />
       )}
 
@@ -1228,7 +1628,7 @@ export default function App() {
               </h2>
               <p className="text-sm text-zinc-400 mt-2">
                 {activeChar.callsign} fell in {currentMissionDef?.title ?? 'the quarantine zone'}.
-                Your metallic gear remains behind.
+                Biometric telemetry confirms the body remains in the sector under active infection.
               </p>
             </div>
             <div className="space-y-2.5 pt-2">
@@ -1410,10 +1810,11 @@ export default function App() {
       {multiplayerModalOpen && (
         <MultiplayerLobbyModal
           selectedCharacter={selectedCharacter}
-          onSelectCharacter={(c) => setSelectedCharacter(c)}
+          onSelectCharacter={(c) => selectCharacter(c, false)}
           settings={settings}
           onClose={() => setMultiplayerModalOpen(false)}
-          onStartCoopMission={(missionId, charId) => {
+          onStartCoopMission={(missionId, charId, sessionId, role) => {
+            coopSessionInfoRef.current = { sessionId, role };
             setMultiplayerModalOpen(false);
             launchMission(missionId, charId, null, 'none', true);
           }}

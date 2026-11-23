@@ -27,6 +27,17 @@ export interface MonsterNetSnapshot {
   dead: boolean;
   active: boolean;
   timestamp: number;
+  formerMeta?: {
+    corpseId: string;
+    ownerPlayerId: string;
+    ownerCallsign: string;
+    characterId: string;
+    primaryWeaponId: string;
+    secondaryWeaponId: string;
+    activeWeaponSlot: 0 | 1;
+    hesitating: boolean;
+    limpSide: -1 | 1;
+  };
 }
 
 export interface MonsterNetTarget {
@@ -49,6 +60,7 @@ export interface MonsterNetTarget {
   dead: boolean;
   active: boolean;
   receivedAt: number;
+  formerMeta?: MonsterNetSnapshot['formerMeta'];
 }
 
 /**
@@ -189,6 +201,7 @@ export class MonsterNetSyncController {
         dead: s.dead,
         active: s.active,
         receivedAt: nowMs,
+        formerMeta: s.formerMeta,
       });
     }
   }

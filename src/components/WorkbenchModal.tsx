@@ -9,12 +9,20 @@ import {
   getUpgradedWeaponStats,
   saveCampaignState,
 } from '../game/data';
-import { CampaignState, CharacterId, WeaponId, WeaponUpgradeState } from '../game/types';
+import {
+  CampaignState,
+  CharacterId,
+  HudSnapshot,
+  WeaponId,
+  WeaponUpgradeState,
+} from '../game/types';
 
 interface Props {
   campaign: CampaignState;
   characterId: CharacterId;
   audio: HorrorAudioEngine | null;
+  armourPieces?: HudSnapshot['armourPieces'];
+  onRepairArmour?: () => void;
   onUpdateCampaign: (next: CampaignState) => void;
   onClose: () => void;
 }
@@ -23,6 +31,8 @@ export const WorkbenchModal: React.FC<Props> = ({
   campaign,
   characterId,
   audio,
+  armourPieces,
+  onRepairArmour,
   onUpdateCampaign,
   onClose,
 }) => {
@@ -186,6 +196,50 @@ export const WorkbenchModal: React.FC<Props> = ({
                 RESTOCK (1 CORE)
               </button>
             </div>
+
+            {onRepairArmour && armourPieces && (
+              (() => {
+                const pieceList = Object.values(armourPieces);
+                const destroyedLabels = pieceList
+                  .filter((p) => p.destructible && p.stage !== 'intact')
+                  .map((p) => p.label.toUpperCase());
+                const needsRepair = pieceList.some(
+                  (p) => p.stage !== 'intact' || p.pct < 100
+                );
+                const canRepair = needsRepair && campaign.salvageCores >= 1;
+                return (
+                  <div className="md:col-span-2 border border-zinc-800 bg-[#0d1017] p-4 flex flex-wrap items-center justify-between gap-4">
+                    <div>
+                      <div className="flex items-center gap-2 font-display font-bold text-zinc-100">
+                        <ShieldCheck className="w-4 h-4 text-sky-400" />
+                        <span>REPAIR &amp; REPLACE BODY ARMOUR</span>
+                        {destroyedLabels.length > 0 && (
+                          <span className="px-2 py-0.5 bg-red-950/90 border border-red-600 text-[10px] font-mono-tech text-red-300">
+                            MISSING PLATES: {destroyedLabels.join(', ')}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-zinc-400 mt-1">
+                        {needsRepair
+                          ? 'Fabricates replacement chest/back plates and restores all 7 ballistic armour zones to 100%.'
+                          : 'All 7 ballistic armour zones are intact at 100% durability.'}
+                      </p>
+                    </div>
+                    <button
+                      disabled={!canRepair}
+                      onClick={onRepairArmour}
+                      className={`px-4 py-2 font-mono-tech text-xs font-semibold border ${
+                        canRepair
+                          ? 'bg-sky-900/60 hover:bg-sky-800 border-sky-400 text-sky-100 cursor-pointer'
+                          : 'bg-zinc-900 border-zinc-800 text-zinc-600 cursor-not-allowed'
+                      }`}
+                    >
+                      {needsRepair ? 'REPAIR ARMOUR (1 CORE)' : 'ARMOUR INTACT'}
+                    </button>
+                  </div>
+                );
+              })()
+            )}
           </div>
 
           {/* Unlock & Equip Secondary Weapons */}

@@ -190,7 +190,12 @@ export const OperativeFaceCam3D: React.FC<Props> = ({
 
     let textures: ProceduralTextureSet | null = createProceduralTextures(renderer);
     const operative = buildFullBodyCharacter(characterId, textures);
-    const heightScale = characterId === 'brute' ? 1.12 : characterId === 'ghost' ? 0.98 : 1.0;
+    const heightScale =
+      characterId === 'brute' || characterId === 'titan'
+        ? 1.12
+        : characterId === 'ghost' || characterId === 'phantom'
+          ? 0.98
+          : 1.0;
     const headY = 1.7 * heightScale;
     operative.rotation.y = -0.22;
     scene.add(operative);

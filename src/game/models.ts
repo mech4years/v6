@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { CHARACTERS } from './data';
 import { ProceduralTextureSet } from './textures';
-import { CharacterId, EnemyType, WeaponId } from './types';
+import { FullBodyArmourRefs, getArmourCrackTextures } from './armourSystem';
+import { ArmourPieceId, CharacterId, EnemyType, WeaponId } from './types';
 
 export interface FirstPersonRigRefs {
   root: THREE.Group;
@@ -29,11 +30,12 @@ export interface FullBodyCharacterRig {
   trimMat: THREE.MeshStandardMaterial;
   visorMat: THREE.MeshStandardMaterial;
   stealthMaterials: THREE.MeshStandardMaterial[];
+  armourRig?: FullBodyArmourRefs;
 }
 
 export interface ArticulatedLegRig {
-  hip: THREE.Group;
-  knee: THREE.Group;
+  hip: THREE.Object3D;
+  knee: THREE.Object3D;
   phaseOffset: number;
   baseHipX: number;
   baseKneeX: number;
@@ -41,8 +43,8 @@ export interface ArticulatedLegRig {
 }
 
 export interface ArticulatedArmRig {
-  shoulder: THREE.Group;
-  elbow: THREE.Group;
+  shoulder: THREE.Object3D;
+  elbow: THREE.Object3D;
   phaseOffset: number;
   baseShoulderX: number;
   baseElbowX: number;
@@ -128,7 +130,7 @@ export interface EnemyModelRefs {
   mandibleFlaps: { mesh: THREE.Object3D; axis: 'x' | 'y' | 'z'; dir: number; baseRot: number }[];
   destructibleArmor: DestructibleArmorPart[];
   torsoPulse?: THREE.Object3D;
-  headGroup?: THREE.Group;
+  headGroup?: THREE.Object3D;
   wormSegments?: THREE.Group[];
   jawTeethRing?: THREE.Group;
   chestHatchLeft?: THREE.Mesh;
@@ -149,6 +151,68 @@ export interface EnemyModelRefs {
   coreMaterials?: THREE.MeshStandardMaterial[];
   regenNodes?: THREE.Mesh[];
   regenMat?: THREE.MeshStandardMaterial;
+  formerRig?: FormerModelRig;
+}
+
+export interface FormerSlitherTendril {
+  root: THREE.Group;
+  segments: THREE.Group[];
+  phaseOffset: number;
+  baseRotX: number;
+  baseRotY: number;
+  baseRotZ: number;
+  convergeAxis: 'x' | 'z';
+}
+
+export interface CorpseSkeletonBones {
+  pelvis: THREE.Bone;
+  spineLower: THREE.Bone;
+  spineUpper: THREE.Bone;
+  neck: THREE.Bone;
+  head: THREE.Bone;
+  jaw: THREE.Bone;
+  clavicleL: THREE.Bone;
+  clavicleR: THREE.Bone;
+  upperArmL: THREE.Bone;
+  upperArmR: THREE.Bone;
+  forearmL: THREE.Bone;
+  forearmR: THREE.Bone;
+  handL: THREE.Bone;
+  handR: THREE.Bone;
+  thighL: THREE.Bone;
+  thighR: THREE.Bone;
+  shinL: THREE.Bone;
+  shinR: THREE.Bone;
+  footL: THREE.Bone;
+  footR: THREE.Bone;
+}
+
+export interface FormerModelRig {
+  bodyRoot: THREE.Group;
+  skeleton: THREE.Skeleton;
+  bones: CorpseSkeletonBones;
+  skinMat: THREE.MeshStandardMaterial;
+  healthySkinColor: THREE.Color;
+  necroticSkinColor: THREE.Color;
+  armorMat: THREE.MeshStandardMaterial;
+  trimMat: THREE.MeshStandardMaterial;
+  visorMat: THREE.MeshStandardMaterial;
+  veinMat: THREE.MeshStandardMaterial;
+  eyeGlowMat: THREE.MeshStandardMaterial;
+  tumorMat: THREE.MeshPhysicalMaterial;
+  tumorMeshes: THREE.Mesh[];
+  veinMeshes: THREE.Mesh[];
+  slitherTendrils: FormerSlitherTendril[];
+  sporePoints: THREE.Points;
+  sporeMat: THREE.PointsMaterial;
+  sporeBaseOffsets: Float32Array;
+  leftFingerGroups: THREE.Object3D[];
+  rightFingerGroups: THREE.Object3D[];
+  primaryWeaponGroup: THREE.Group;
+  secondaryWeaponGroup: THREE.Group;
+  corruptedMuzzleFlash: THREE.Mesh;
+  activeWeaponSlot: 0 | 1;
+  limpSide: -1 | 1;
 }
 
 function makeContactShadow(textures: ProceduralTextureSet, radius: number): THREE.Mesh {
@@ -924,21 +988,52 @@ export function buildFullBodyCharacter(
   const bulk = isHeavy ? 1.32 : isStealth ? 0.88 : isWanderer ? 0.98 : 1.0;
   const heightScale = charId === 'titan' ? 1.15 : charId === 'brute' ? 1.12 : charId === 'ghost' ? 0.99 : 1.0;
 
-  // Articulated Leg Groups
+  const crackTextures = getArmourCrackTextures();
+  const pieceOverlayMeshes: Partial<Record<ArmourPieceId, THREE.Mesh>> = {};
+  const pieceOverlayMats: Partial<Record<ArmourPieceId, THREE.MeshBasicMaterial>> = {};
+  const makeOverlayMat = (opacity = 0.0) =>
+    new THREE.MeshBasicMaterial({
+      map: crackTextures.dented,
+      transparent: true,
+      opacity,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+    });
+
+  // Articulated Leg Groups (Leg Armour is NON-DESTRUCTIBLE)
   const leftLegGroup = new THREE.Group();
   const rightLegGroup = new THREE.Group();
+  const leftLegArmourGroup = new THREE.Group();
+  const rightLegArmourGroup = new THREE.Group();
   leftLegGroup.position.set(-0.135 * bulk, 0.92, 0);
   rightLegGroup.position.set(0.135 * bulk, 0.92, 0);
+  leftLegGroup.add(leftLegArmourGroup);
+  rightLegGroup.add(rightLegArmourGroup);
 
   [
-    { legGrp: leftLegGroup, side: -1 },
-    { legGrp: rightLegGroup, side: 1 },
-  ].forEach(({ legGrp, side }) => {
+    { legGrp: leftLegGroup, armGrp: leftLegArmourGroup, side: -1, pieceId: 'leftLeg' as ArmourPieceId },
+    { legGrp: rightLegGroup, armGrp: rightLegArmourGroup, side: 1, pieceId: 'rightLeg' as ArmourPieceId },
+  ].forEach(({ legGrp, armGrp, side, pieceId }) => {
     const thigh = new THREE.Mesh(
       createMuscleBellyGeometry(0.088 * bulk, 0.44, 10),
       undersuitMat
     );
     thigh.position.set(0, -0.2, 0);
+    const shin = new THREE.Mesh(
+      createMuscleBellyGeometry(0.068 * bulk, 0.42, 10),
+      undersuitMat
+    );
+    shin.position.set(0, -0.6, 0);
+    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.148 * bulk, 0.11, 0.27), trimMat);
+    boot.position.set(0, -0.865, 0.035);
+    const bootToe = new THREE.Mesh(new THREE.BoxGeometry(0.132 * bulk, 0.07, 0.09), armorMat);
+    bootToe.position.set(0, -0.88, 0.17);
+    const mudSplatter = new THREE.Mesh(new THREE.BoxGeometry(0.152 * bulk, 0.065, 0.28), dirtMat);
+    mudSplatter.position.set(0, -0.885, 0.038);
+    legGrp.add(thigh, shin, boot, bootToe, mudSplatter);
+
+    // Leg Armour Plating (never removed)
     const thighPlate = new THREE.Mesh(new THREE.BoxGeometry(0.055 * bulk, 0.25, 0.15), trimMat);
     thighPlate.position.set(side * 0.088 * bulk, -0.2, 0.01);
     const holster = new THREE.Mesh(new THREE.BoxGeometry(0.065 * bulk, 0.16, 0.12), armorMat);
@@ -946,129 +1041,231 @@ export function buildFullBodyCharacter(
     const kneePad = new THREE.Mesh(new THREE.BoxGeometry(0.125 * bulk, 0.115, 0.075), trimMat);
     kneePad.position.set(0, -0.4, 0.076 * bulk);
     kneePad.rotation.x = 0.12;
-    const shin = new THREE.Mesh(
-      createMuscleBellyGeometry(0.068 * bulk, 0.42, 10),
-      armorMat
-    );
-    shin.position.set(0, -0.6, 0);
-    const shinGuard = new THREE.Mesh(new THREE.BoxGeometry(0.105 * bulk, 0.32, 0.06), trimMat);
+    const shinGuard = new THREE.Mesh(new THREE.BoxGeometry(0.105 * bulk, 0.32, 0.06), armorMat);
     shinGuard.position.set(0, -0.6, 0.068 * bulk);
     shinGuard.rotation.x = -0.06;
-    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.148 * bulk, 0.11, 0.27), trimMat);
-    boot.position.set(0, -0.865, 0.035);
-    const bootToe = new THREE.Mesh(new THREE.BoxGeometry(0.132 * bulk, 0.07, 0.09), armorMat);
-    bootToe.position.set(0, -0.88, 0.17);
-    const mudSplatter = new THREE.Mesh(new THREE.BoxGeometry(0.152 * bulk, 0.065, 0.28), dirtMat);
-    mudSplatter.position.set(0, -0.885, 0.038);
-    legGrp.add(thigh, thighPlate, holster, kneePad, shin, shinGuard, boot, bootToe, mudSplatter);
+
+    const legOvMat = makeOverlayMat();
+    const legOv = new THREE.Mesh(new THREE.PlaneGeometry(0.115 * bulk, 0.28), legOvMat);
+    legOv.position.set(0, -0.58, 0.102 * bulk);
+    legOv.visible = false;
+    pieceOverlayMeshes[pieceId] = legOv;
+    pieceOverlayMats[pieceId] = legOvMat;
+
+    armGrp.add(thighPlate, holster, kneePad, shinGuard, legOv);
     group.add(legGrp);
   });
 
-  // Torso & Core Group
+  // Torso & Core Group:
+  // 1) undersuitTorsoGroup -> ALWAYS visible clothed operative torso/tunic/vest/coat
+  // 2) chestArmourGroup -> DESTRUCTIBLE chest ballistic plate assembly
+  // 3) backArmourGroup -> DESTRUCTIBLE back plate + fasteners assembly
   const torsoGroup = new THREE.Group();
   torsoGroup.position.set(0, 0.98, 0);
 
+  const undersuitTorsoGroup = new THREE.Group();
+  const chestArmourGroup = new THREE.Group();
+  const chestLeftHalf = new THREE.Group();
+  const chestRightHalf = new THREE.Group();
+  const chestCenterBridge = new THREE.Group();
+  chestArmourGroup.add(chestLeftHalf, chestRightHalf, chestCenterBridge);
+
+  const backArmourGroup = new THREE.Group();
+  const backMainPlate = new THREE.Group();
+  const backFasteners: THREE.Object3D[] = [];
+  backArmourGroup.add(backMainPlate);
+
+  // Underlying clothed torso & tactical undersuit (exposed cleanly when chest/back plates shatter)
   const pelvis = new THREE.Mesh(new THREE.BoxGeometry(0.37 * bulk, 0.15, 0.23 * bulk), undersuitMat);
   pelvis.position.set(0, 0, 0);
   const belt = new THREE.Mesh(new THREE.BoxGeometry(0.42 * bulk, 0.08, 0.29 * bulk), trimMat);
   belt.position.set(0, 0.09, 0);
-  torsoGroup.add(pelvis, belt);
+  undersuitTorsoGroup.add(pelvis, belt);
 
   for (let p = -1; p <= 1; p += 2) {
-    const pouch = new THREE.Mesh(new THREE.BoxGeometry(0.095 * bulk, 0.1, 0.065), armorMat);
+    const pouch = new THREE.Mesh(new THREE.BoxGeometry(0.095 * bulk, 0.1, 0.065), undersuitMat);
     pouch.position.set(p * 0.135 * bulk, 0.09, 0.155 * bulk);
-    torsoGroup.add(pouch);
+    undersuitTorsoGroup.add(pouch);
   }
 
   const abdomen = new THREE.Mesh(createMuscleBellyGeometry(0.18 * bulk, 0.28, 12), undersuitMat);
   abdomen.scale.set(1.05, 1, 0.7);
   abdomen.position.set(0, 0.23, 0);
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.42 * bulk, 0.34, 0.26 * bulk), armorMat);
-  torso.position.set(0, 0.41, 0);
-  const sternumPlate = new THREE.Mesh(new THREE.BoxGeometry(0.36 * bulk, 0.28, 0.31 * bulk), trimMat);
-  sternumPlate.position.set(0, 0.42, 0.015);
+
+  // Clothed Tactical Undersuit Shirt / Tunic Core (always visible underneath outer chest/back armor)
+  const undersuitCore = new THREE.Mesh(
+    new THREE.BoxGeometry(0.385 * bulk, 0.35, 0.225 * bulk),
+    undersuitMat
+  );
+  undersuitCore.position.set(0, 0.41, 0);
+  const undersuitRibs = new THREE.Mesh(
+    new THREE.BoxGeometry(0.33 * bulk, 0.25, 0.238 * bulk),
+    new THREE.MeshStandardMaterial({
+      color: isWanderer ? 0x3b2f26 : isMedic ? 0x2a394a : 0x181c24,
+      roughness: 0.78,
+      metalness: 0.14,
+    })
+  );
+  undersuitRibs.position.set(0, 0.4, 0);
+  const shoulderHarnessL = new THREE.Mesh(
+    new THREE.BoxGeometry(0.06 * bulk, 0.34, 0.245 * bulk),
+    trimMat
+  );
+  shoulderHarnessL.position.set(-0.11 * bulk, 0.41, 0);
+  const shoulderHarnessR = shoulderHarnessL.clone();
+  shoulderHarnessR.position.x = 0.11 * bulk;
+  const collarBase = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.105 * bulk, 0.125 * bulk, 0.07, 12),
+    undersuitMat
+  );
+  collarBase.position.set(0, 0.59, 0);
+  undersuitTorsoGroup.add(undersuitCore, undersuitRibs, shoulderHarnessL, shoulderHarnessR, collarBase, abdomen);
+
+  // Destructible Chest Armour Group (Center Sternum Bridge + Left/Right Pec Plates + Collar Guard)
+  const chestUnderBacking = new THREE.Mesh(
+    new THREE.BoxGeometry(0.41 * bulk, 0.31, 0.08 * bulk),
+    armorMat
+  );
+  chestUnderBacking.position.set(0, 0.41, 0.095 * bulk);
+  const sternumPlate = new THREE.Mesh(new THREE.BoxGeometry(0.36 * bulk, 0.28, 0.13 * bulk), trimMat);
+  sternumPlate.position.set(0, 0.42, 0.125 * bulk);
   sternumPlate.rotation.x = -0.06;
-  [-0.11 * bulk, 0.11 * bulk].forEach((cx) => {
-    const pecPlate = new THREE.Mesh(new THREE.BoxGeometry(0.16 * bulk, 0.15, 0.06), armorMat);
-    pecPlate.position.set(cx, 0.46, 0.16 * bulk);
-    pecPlate.rotation.y = cx < 0 ? 0.14 : -0.14;
-    torsoGroup.add(pecPlate);
-  });
-  const spinePack = new THREE.Mesh(new THREE.BoxGeometry(0.24 * bulk, 0.36, 0.12), trimMat);
-  spinePack.position.set(0, 0.4, -0.16 * bulk);
-  const collarGuard = new THREE.Mesh(new THREE.TorusGeometry(0.14 * bulk, 0.04, 8, 18, Math.PI * 1.45), trimMat);
+  const collarGuard = new THREE.Mesh(
+    new THREE.TorusGeometry(0.14 * bulk, 0.04, 8, 18, Math.PI * 1.45),
+    trimMat
+  );
   collarGuard.rotation.x = Math.PI / 2;
   collarGuard.rotation.z = -Math.PI * 0.22;
   collarGuard.position.set(0, 0.58, -0.01);
-  // Combat wear & dried blood contamination across chest plate
   const chestScuff = new THREE.Mesh(new THREE.BoxGeometry(0.22 * bulk, 0.11, 0.015), bloodWearMat);
-  chestScuff.position.set(-0.07 * bulk, 0.42, 0.185 * bulk);
+  chestScuff.position.set(-0.07 * bulk, 0.42, 0.195 * bulk);
   chestScuff.rotation.z = 0.28;
-  torsoGroup.add(abdomen, torso, sternumPlate, spinePack, collarGuard, chestScuff);
+  chestCenterBridge.add(chestUnderBacking, sternumPlate, collarGuard, chestScuff);
 
-  // Distinct operative armor / backpack / coat silhouettes (NOT recolors)
+  const leftPecPlate = new THREE.Mesh(new THREE.BoxGeometry(0.16 * bulk, 0.17, 0.07), armorMat);
+  leftPecPlate.position.set(-0.11 * bulk, 0.45, 0.165 * bulk);
+  leftPecPlate.rotation.y = 0.14;
+  chestLeftHalf.add(leftPecPlate);
+
+  const rightPecPlate = new THREE.Mesh(new THREE.BoxGeometry(0.16 * bulk, 0.17, 0.07), armorMat);
+  rightPecPlate.position.set(0.11 * bulk, 0.45, 0.165 * bulk);
+  rightPecPlate.rotation.y = -0.14;
+  chestRightHalf.add(rightPecPlate);
+
+  const chestCrackMat = makeOverlayMat(0);
+  const chestCrackMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.35 * bulk, 0.28),
+    chestCrackMat
+  );
+  chestCrackMesh.position.set(0, 0.43, 0.205 * bulk);
+  chestCrackMesh.visible = false;
+  chestCenterBridge.add(chestCrackMesh);
+  pieceOverlayMeshes.chest = chestCrackMesh;
+  pieceOverlayMats.chest = chestCrackMat;
+
+  // Destructible Back Armour Group (Rear Ballistic Plate + Spine Pack + 4 Snapping Fasteners)
+  const rearBallisticPlate = new THREE.Mesh(
+    new THREE.BoxGeometry(0.39 * bulk, 0.32, 0.1 * bulk),
+    armorMat
+  );
+  rearBallisticPlate.position.set(0, 0.41, -0.115 * bulk);
+  const spinePack = new THREE.Mesh(new THREE.BoxGeometry(0.24 * bulk, 0.35, 0.11), trimMat);
+  spinePack.position.set(0, 0.4, -0.165 * bulk);
+  backMainPlate.add(rearBallisticPlate, spinePack);
+
+  const fastenerOffsets: [number, number][] = [
+    [-0.14 * bulk, 0.52],
+    [0.14 * bulk, 0.52],
+    [-0.13 * bulk, 0.29],
+    [0.13 * bulk, 0.29],
+  ];
+  fastenerOffsets.forEach(([fx, fy]) => {
+    const bolt = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.045, 6), trimMat);
+    bolt.rotation.x = Math.PI / 2;
+    const fz = -0.175 * bulk;
+    bolt.position.set(fx, fy, fz);
+    bolt.userData.restX = fx;
+    bolt.userData.restY = fy;
+    bolt.userData.restZ = fz;
+    backFasteners.push(bolt);
+    backArmourGroup.add(bolt);
+  });
+
+  const backCrackMat = makeOverlayMat(0);
+  const backCrackMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.32 * bulk, 0.32),
+    backCrackMat
+  );
+  backCrackMesh.position.set(0, 0.41, -0.228 * bulk);
+  backCrackMesh.rotation.y = Math.PI;
+  backCrackMesh.visible = false;
+  backMainPlate.add(backCrackMesh);
+  pieceOverlayMeshes.back = backCrackMesh;
+  pieceOverlayMats.back = backCrackMat;
+
+  // Distinct operative armor / backpack / coat silhouettes placed cleanly in:
+  // undersuitTorsoGroup (cloth/coats/undergarment) vs chestArmourGroup vs backArmourGroup
   if (charId === 'reaper') {
     for (let m = -1; m <= 1; m++) {
       const magPouch = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.14, 0.06), undersuitMat);
-      magPouch.position.set(m * 0.095, 0.33, 0.175);
-      torsoGroup.add(magPouch);
+      magPouch.position.set(m * 0.095, 0.31, 0.165);
+      undersuitTorsoGroup.add(magPouch);
     }
     const tallyPlate = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.16, 0.025), visorMat);
-    tallyPlate.position.set(0.11, 0.48, 0.178);
-    torsoGroup.add(tallyPlate);
+    tallyPlate.position.set(0.11, 0.48, 0.195);
+    chestRightHalf.add(tallyPlate);
   } else if (charId === 'ghost') {
     const shroudCape = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.58, 0.04), undersuitMat);
-    shroudCape.position.set(0, 0.28, -0.18);
+    shroudCape.position.set(0, 0.28, -0.155);
     shroudCape.rotation.x = 0.12;
     const rangefinderPack = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.28, 0.12), armorMat);
-    rangefinderPack.position.set(0, 0.44, -0.19);
+    rangefinderPack.position.set(0, 0.44, -0.2);
     const scarfCollar = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.052, 8, 16), undersuitMat);
     scarfCollar.rotation.x = Math.PI / 2;
     scarfCollar.position.set(0, 0.61, 0.01);
-    torsoGroup.add(shroudCape, rangefinderPack, scarfCollar);
+    undersuitTorsoGroup.add(shroudCape, scarfCollar);
+    backMainPlate.add(rangefinderPack);
   } else if (charId === 'titan' || charId === 'brute') {
-    [-0.36, 0.36].forEach((sx) => {
-      const pauldron = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.24, 0.34), trimMat);
-      pauldron.position.set(sx, 0.54, 0);
-      pauldron.rotation.z = sx < 0 ? 0.24 : -0.24;
-      torsoGroup.add(pauldron);
-    });
     const blastCollar = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.12, 0.34), armorMat);
     blastCollar.position.set(0, 0.57, 0.02);
     const reactorVent = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 0.22, 10), visorMat);
     reactorVent.rotation.x = Math.PI / 2;
-    reactorVent.position.set(0, 0.45, -0.24);
-    torsoGroup.add(blastCollar, reactorVent);
+    reactorVent.position.set(0, 0.45, -0.25);
+    chestCenterBridge.add(blastCollar);
+    backMainPlate.add(reactorVent);
   } else if (charId === 'patch') {
     const whiteMedMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.4, metalness: 0.18 });
     const crossH = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.04, 0.02), visorMat);
     const crossV = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.14, 0.02), visorMat);
-    crossH.position.set(0, 0.45, 0.185);
-    crossV.position.set(0, 0.45, 0.185);
+    crossH.position.set(0, 0.45, 0.198);
+    crossV.position.set(0, 0.45, 0.198);
     const bioTank = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.085, 0.4, 12), whiteMedMat);
-    bioTank.position.set(-0.08, 0.42, -0.21);
+    bioTank.position.set(-0.08, 0.42, -0.22);
     const stimTube = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.36, 8), visorMat);
-    stimTube.position.set(0.09, 0.42, -0.21);
-    torsoGroup.add(crossH, crossV, bioTank, stimTube);
+    stimTube.position.set(0.09, 0.42, -0.22);
+    chestCenterBridge.add(crossH, crossV);
+    backMainPlate.add(bioTank, stimTube);
   } else if (charId === 'phantom') {
     const cloakDrape = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.28, 0.72, 10, 1, true, 0.6, Math.PI * 1.4), undersuitMat);
     cloakDrape.position.set(0, 0.25, -0.08);
     cloakDrape.material.side = THREE.DoubleSide;
     const phaseHarness = new THREE.Mesh(new THREE.TorusGeometry(0.11, 0.015, 8, 16), visorMat);
-    phaseHarness.position.set(0, 0.44, 0.16);
+    phaseHarness.position.set(0, 0.44, 0.18);
     const bladeScabbard = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.44, 0.05), trimMat);
-    bladeScabbard.position.set(0.14, 0.42, -0.19);
+    bladeScabbard.position.set(0.14, 0.42, -0.21);
     bladeScabbard.rotation.z = -0.35;
-    torsoGroup.add(cloakDrape, phaseHarness, bladeScabbard);
+    undersuitTorsoGroup.add(cloakDrape);
+    chestCenterBridge.add(phaseHarness);
+    backMainPlate.add(bladeScabbard);
   } else if (charId === 'engineer' || charId === 'nyx') {
     const backpack = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.38, 0.16), trimMat);
-    backpack.position.set(0, 0.38, -0.22);
+    backpack.position.set(0, 0.38, -0.23);
     const servoArm = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.36, 0.06), armorMat);
-    servoArm.position.set(-0.15, 0.62, -0.2);
+    servoArm.position.set(-0.15, 0.62, -0.21);
     servoArm.rotation.z = 0.28;
     const antenna = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 0.38, 8), visorMat);
-    antenna.position.set(0.12, 0.68, -0.24);
-    torsoGroup.add(backpack, servoArm, antenna);
+    antenna.position.set(0.12, 0.68, -0.25);
+    backMainPlate.add(backpack, servoArm, antenna);
   } else if (charId === 'wanderer') {
     const coatL = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.56, 0.05), trimMat);
     coatL.position.set(-0.14, -0.02, -0.14);
@@ -1076,25 +1273,28 @@ export function buildFullBodyCharacter(
     const coatR = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.56, 0.05), trimMat);
     coatR.position.set(0.14, -0.02, -0.14);
     coatR.rotation.z = 0.08;
-    const bandolier = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.48, 0.32), trimMat);
+    const bandolier = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.48, 0.28), trimMat);
     bandolier.position.set(0, 0.41, 0.01);
     bandolier.rotation.z = 0.52;
-    torsoGroup.add(coatL, coatR, bandolier);
+    undersuitTorsoGroup.add(coatL, coatR, bandolier);
   } else if (charId === 'zero') {
     const coreRing = new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.018, 10, 20), visorMat);
-    coreRing.position.set(0, 0.43, 0.18);
+    coreRing.position.set(0, 0.43, 0.14);
     const coreGlow = new THREE.Mesh(new THREE.SphereGeometry(0.055, 14, 14), visorMat);
-    coreGlow.position.set(0, 0.43, 0.17);
-    torsoGroup.add(coreRing, coreGlow);
+    coreGlow.position.set(0, 0.43, 0.13);
+    undersuitTorsoGroup.add(coreRing, coreGlow);
   } else if (charId === 'raven') {
-    const ammoRig = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.1, 0.33), undersuitMat);
+    const ammoRig = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.1, 0.3), undersuitMat);
     ammoRig.position.set(0, 0.22, 0.02);
-    torsoGroup.add(ammoRig);
+    undersuitTorsoGroup.add(ammoRig);
   }
 
-  // Head Group with Sculpted Realistic Facial Anatomy + Unique Headgear
+  torsoGroup.add(undersuitTorsoGroup, chestArmourGroup, backArmourGroup);
+
+  // Head Group with Sculpted Realistic Facial Anatomy + Unique Headgear (Helmet Armour is NON-DESTRUCTIBLE)
   const headGroup = new THREE.Group();
   headGroup.position.set(0, 0.64, 0);
+  const helmetArmourGroup = new THREE.Group();
 
   const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.068, 0.078, 0.14, 10), skinMat);
   neck.position.set(0, 0.01, 0);
@@ -1134,7 +1334,6 @@ export function buildFullBodyCharacter(
     headGroup.add(eyeWhite, iris, cheek);
   });
 
-  // Combat facial scar / warpaint detail
   if (charId === 'reaper' || charId === 'wanderer' || charId === 'titan') {
     const scar = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.052, 0.012), bloodWearMat);
     scar.position.set(0.048 * headScale, 0.135, 0.108 * headScale);
@@ -1142,9 +1341,9 @@ export function buildFullBodyCharacter(
     headGroup.add(scar);
   }
 
-  headGroup.add(neck, cranium, jaw, browRidge, nose);
+  headGroup.add(neck, cranium, jaw, browRidge, nose, helmetArmourGroup);
 
-  // Operative-Specific Helmet / Visor / Mask Assembly (Preserving visible face detail!)
+  // Operative-Specific Helmet / Visor / Mask Assembly placed inside helmetArmourGroup (NON-DESTRUCTIBLE)
   if (charId === 'reaper') {
     const cap = new THREE.Mesh(new THREE.SphereGeometry(0.132, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.56), armorMat);
     cap.position.set(0, 0.15, -0.008);
@@ -1152,7 +1351,7 @@ export function buildFullBodyCharacter(
     halfMask.position.set(0, 0.072, 0.065);
     const visorSlit = new THREE.Mesh(new THREE.BoxGeometry(0.155, 0.034, 0.045), visorMat);
     visorSlit.position.set(0, 0.152, 0.11);
-    headGroup.add(cap, halfMask, visorSlit);
+    helmetArmourGroup.add(cap, halfMask, visorSlit);
   } else if (charId === 'ghost') {
     const hood = new THREE.Mesh(new THREE.SphereGeometry(0.138, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.72), undersuitMat);
     hood.position.set(0, 0.145, -0.015);
@@ -1161,7 +1360,7 @@ export function buildFullBodyCharacter(
     const monocle = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.04, 12), visorMat);
     monocle.rotation.x = Math.PI / 2;
     monocle.position.set(0.045, 0.152, 0.122);
-    headGroup.add(hood, faceScarf, monocle);
+    helmetArmourGroup.add(hood, faceScarf, monocle);
   } else if (charId === 'titan' || charId === 'brute') {
     const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.142 * headScale, 16, 12), armorMat);
     helmet.scale.set(0.98, 1.05, 1.08);
@@ -1172,7 +1371,7 @@ export function buildFullBodyCharacter(
     visor.position.set(0, 0.155, 0.125);
     const jawGrille = new THREE.Mesh(new THREE.BoxGeometry(0.18 * headScale, 0.07, 0.16), trimMat);
     jawGrille.position.set(0, 0.075, 0.05);
-    headGroup.add(helmet, browShield, visor, jawGrille);
+    helmetArmourGroup.add(helmet, browShield, visor, jawGrille);
   } else if (charId === 'patch') {
     const medCap = new THREE.Mesh(new THREE.SphereGeometry(0.132, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.52), trimMat);
     medCap.position.set(0, 0.155, -0.01);
@@ -1181,7 +1380,7 @@ export function buildFullBodyCharacter(
     const respMask = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.068, 0.07, 10), armorMat);
     respMask.rotation.x = Math.PI / 2;
     respMask.position.set(0, 0.08, 0.105);
-    headGroup.add(medCap, goggles, respMask);
+    helmetArmourGroup.add(medCap, goggles, respMask);
   } else if (charId === 'phantom') {
     const stealthHood = new THREE.Mesh(new THREE.SphereGeometry(0.136, 14, 12, 0, Math.PI * 2, 0, Math.PI * 0.68), armorMat);
     stealthHood.position.set(0, 0.148, -0.012);
@@ -1190,9 +1389,9 @@ export function buildFullBodyCharacter(
     [-0.04, 0.04].forEach((ox) => {
       const optic = new THREE.Mesh(new THREE.SphereGeometry(0.018, 8, 8), visorMat);
       optic.position.set(ox, 0.15, 0.115);
-      headGroup.add(optic);
+      helmetArmourGroup.add(optic);
     });
-    headGroup.add(stealthHood, shadowMask);
+    helmetArmourGroup.add(stealthHood, shadowMask);
   } else if (charId === 'engineer' || charId === 'nyx') {
     const hardhat = new THREE.Mesh(new THREE.SphereGeometry(0.134, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.5), armorMat);
     hardhat.position.set(0, 0.16, -0.005);
@@ -1202,9 +1401,8 @@ export function buildFullBodyCharacter(
     multiLens.position.set(0, 0.154, 0.112);
     const comms = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.18, 6), trimMat);
     comms.position.set(0.13, 0.24, -0.02);
-    headGroup.add(hardhat, brim, multiLens, comms);
+    helmetArmourGroup.add(hardhat, brim, multiLens, comms);
   } else if (charId === 'wanderer') {
-    // Rugged wasteland hat brim + hair/stubble + tactical goggles
     const hatCrown = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.128, 0.1, 12), trimMat);
     hatCrown.position.set(0, 0.23, -0.005);
     const hatBrim = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.23, 0.018, 16), trimMat);
@@ -1213,7 +1411,7 @@ export function buildFullBodyCharacter(
     goggles.position.set(0, 0.162, 0.112);
     const bandana = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.065, 0.125), undersuitMat);
     bandana.position.set(0, 0.068, 0.052);
-    headGroup.add(hatCrown, hatBrim, goggles, bandana);
+    helmetArmourGroup.add(hatCrown, hatBrim, goggles, bandana);
   } else {
     const helmetDome = new THREE.Mesh(new THREE.SphereGeometry(0.132 * headScale, 16, 14), armorMat);
     helmetDome.scale.set(0.95, 1.06, 1.08);
@@ -1223,7 +1421,7 @@ export function buildFullBodyCharacter(
     jawGuard.rotation.x = 0.14;
     const visor = new THREE.Mesh(new THREE.BoxGeometry(0.165 * headScale, 0.042, 0.055), visorMat);
     visor.position.set(0, 0.155, 0.118);
-    headGroup.add(helmetDome, jawGuard, visor);
+    helmetArmourGroup.add(helmetDome, jawGuard, visor);
   }
 
   const earL = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.04, 10), trimMat);
@@ -1231,33 +1429,58 @@ export function buildFullBodyCharacter(
   earL.position.set(-0.125 * headScale, 0.145, 0);
   const earR = earL.clone();
   earR.position.x = -earL.position.x;
-  headGroup.add(earL, earR);
+
+  const helmetOvMat = makeOverlayMat();
+  const helmetOv = new THREE.Mesh(new THREE.PlaneGeometry(0.16 * headScale, 0.12), helmetOvMat);
+  helmetOv.position.set(0, 0.21, 0.132 * headScale);
+  helmetOv.rotation.x = -0.35;
+  helmetOv.visible = false;
+  pieceOverlayMeshes.helmet = helmetOv;
+  pieceOverlayMats.helmet = helmetOvMat;
+
+  helmetArmourGroup.add(earL, earR, helmetOv);
   torsoGroup.add(headGroup);
 
-  // Articulated Shoulder Pauldrons, Upper Arms, Forearms & Detailed Gloves
+  // Articulated Shoulder Pauldrons, Upper Arms, Forearms & Detailed Gloves (Arm Armour is NON-DESTRUCTIBLE)
   const leftArmGroup = new THREE.Group();
   const rightArmGroup = new THREE.Group();
+  const leftArmArmourGroup = new THREE.Group();
+  const rightArmArmourGroup = new THREE.Group();
   leftArmGroup.position.set(-0.275 * bulk, 0.5, 0);
   rightArmGroup.position.set(0.275 * bulk, 0.5, 0);
+  leftArmGroup.add(leftArmArmourGroup);
+  rightArmGroup.add(rightArmArmourGroup);
 
   [
-    { armGrp: leftArmGroup, dir: -1 },
-    { armGrp: rightArmGroup, dir: 1 },
-  ].forEach(({ armGrp, dir }) => {
-    const pauldron = new THREE.Mesh(new THREE.BoxGeometry(0.145 * bulk, 0.16, 0.21), trimMat);
-    pauldron.position.set(dir * 0.01, 0, 0);
-    pauldron.rotation.z = -dir * 0.28;
+    { armGrp: leftArmGroup, armArmourGrp: leftArmArmourGroup, dir: -1, pieceId: 'leftArm' as ArmourPieceId },
+    { armGrp: rightArmGroup, armArmourGrp: rightArmArmourGroup, dir: 1, pieceId: 'rightArm' as ArmourPieceId },
+  ].forEach(({ armGrp, armArmourGrp, dir, pieceId }) => {
     const upperArm = new THREE.Mesh(createMuscleBellyGeometry(0.058 * bulk, 0.26, 10), undersuitMat);
     upperArm.position.set(-dir * 0.01, -0.14, 0.04);
     upperArm.rotation.x = -0.35;
     upperArm.rotation.z = -dir * 0.18;
+    const glove = new THREE.Mesh(new THREE.BoxGeometry(0.085 * bulk, 0.09, 0.085), gloveMat);
+    glove.position.set(-dir * 0.125, -0.32, 0.31);
+    armGrp.add(upperArm, glove);
+
+    const pauldronSize = isHeavy ? new THREE.BoxGeometry(0.22, 0.22, 0.3) : new THREE.BoxGeometry(0.145 * bulk, 0.16, 0.21);
+    const pauldron = new THREE.Mesh(pauldronSize, trimMat);
+    pauldron.position.set(isHeavy ? dir * 0.045 : dir * 0.01, isHeavy ? 0.03 : 0, 0);
+    pauldron.rotation.z = -dir * 0.28;
     const forearm = new THREE.Mesh(new THREE.BoxGeometry(0.095 * bulk, 0.26, 0.1), armorMat);
     forearm.position.set(-dir * 0.075, -0.29, 0.19);
     forearm.rotation.x = -1.25;
     forearm.rotation.z = -dir * 0.36;
-    const glove = new THREE.Mesh(new THREE.BoxGeometry(0.085 * bulk, 0.09, 0.085), gloveMat);
-    glove.position.set(-dir * 0.125, -0.32, 0.31);
-    armGrp.add(pauldron, upperArm, forearm, glove);
+
+    const armOvMat = makeOverlayMat();
+    const armOv = new THREE.Mesh(new THREE.PlaneGeometry(0.12 * bulk, 0.14), armOvMat);
+    armOv.position.set(dir * 0.085 * bulk, 0.02, 0);
+    armOv.rotation.y = dir * (Math.PI / 2);
+    armOv.visible = false;
+    pieceOverlayMeshes[pieceId] = armOv;
+    pieceOverlayMats[pieceId] = armOvMat;
+
+    armArmourGrp.add(pauldron, forearm, armOv);
     torsoGroup.add(armGrp);
   });
 
@@ -1273,6 +1496,33 @@ export function buildFullBodyCharacter(
   group.add(shadow);
   group.scale.setScalar(heightScale);
 
+  const armorColorHex = new THREE.Color(def.armorColor).getHex();
+  const trimColorHex = new THREE.Color(def.trimColor).getHex();
+
+  const armourRig: FullBodyArmourRefs = {
+    undersuitTorsoGroup,
+    chestArmourGroup,
+    chestLeftHalf,
+    chestRightHalf,
+    chestCenterBridge,
+    chestCrackMesh,
+    chestCrackMat,
+    backArmourGroup,
+    backMainPlate,
+    backFasteners,
+    backCrackMesh,
+    backCrackMat,
+    helmetArmourGroup,
+    leftArmArmourGroup,
+    rightArmArmourGroup,
+    leftLegArmourGroup,
+    rightLegArmourGroup,
+    pieceOverlayMeshes,
+    pieceOverlayMats,
+    armorColorHex,
+    trimColorHex,
+  };
+
   const rig: FullBodyCharacterRig = {
     headGroup,
     torsoGroup,
@@ -1285,6 +1535,7 @@ export function buildFullBodyCharacter(
     trimMat,
     visorMat,
     stealthMaterials,
+    armourRig,
   };
   group.userData.rig = rig;
 
@@ -1302,6 +1553,9 @@ export function buildEnemyModel(
   type: EnemyType,
   textures: ProceduralTextureSet
 ): EnemyModelRefs {
+  if (type === 'the_former') {
+    return buildFormerAndCorpseModel('reaper', 'assault_rifle', 'pistol', 0.55, textures);
+  }
   const group = new THREE.Group();
   const hitMeshes: THREE.Mesh[] = [];
   const limbs: THREE.Object3D[] = [];
@@ -4485,4 +4739,891 @@ export function buildStoryCharacterModel(
   goggles.position.set(0, 1.7, 0.11);
   group.add(body, collar, head, goggles);
   return group;
+}
+
+export function buildFormerAndCorpseModel(
+  charId: CharacterId,
+  primaryWeaponId: WeaponId,
+  secondaryWeaponId: WeaponId,
+  suitWear: number,
+  textures: ProceduralTextureSet,
+  limpSide: -1 | 1 = 1,
+  armourDamaged?: { destroyedChest?: boolean; destroyedBack?: boolean }
+): EnemyModelRefs {
+  const def = CHARACTERS[charId] ?? CHARACTERS.reaper;
+  const group = new THREE.Group();
+  const bodyRoot = new THREE.Group();
+  group.add(bodyRoot);
+
+  const hitMeshes: THREE.Mesh[] = [];
+  const limbs: THREE.Object3D[] = [];
+  const legRigs: ArticulatedLegRig[] = [];
+  const armRigs: ArticulatedArmRig[] = [];
+  const tendrils: TendrilRig[] = [];
+  const tentacleChains: TentacleChainRig[] = [];
+  const mandibleFlaps: { mesh: THREE.Object3D; axis: 'x' | 'y' | 'z'; dir: number; baseRot: number }[] = [];
+  const destructibleArmor: DestructibleArmorPart[] = [];
+  const eyeMeshes: THREE.Mesh[] = [];
+  const tumorMeshes: THREE.Mesh[] = [];
+  const veinMeshes: THREE.Mesh[] = [];
+  const slitherTendrils: FormerSlitherTendril[] = [];
+  const leftFingerGroups: THREE.Object3D[] = [];
+  const rightFingerGroups: THREE.Object3D[] = [];
+
+  const isHeavy = charId === 'brute' || charId === 'titan';
+  const isStealth = charId === 'ghost' || charId === 'phantom';
+  const isMedic = charId === 'patch';
+  const isTech = charId === 'engineer' || charId === 'nyx';
+  const isWanderer = charId === 'wanderer';
+
+  const bulk = isHeavy ? 1.32 : isStealth ? 0.88 : isWanderer ? 0.98 : 1.0;
+  const heightScale = charId === 'titan' ? 1.15 : charId === 'brute' ? 1.12 : charId === 'ghost' ? 0.99 : 1.0;
+
+  const armorMat = new THREE.MeshStandardMaterial({
+    color: def.armorColor,
+    map: textures.metalPlateMap,
+    normalMap: textures.metalNormal,
+    normalScale: new THREE.Vector2(1.15, 1.15),
+    roughnessMap: textures.metalRoughness,
+    metalnessMap: textures.metalMetalness,
+    metalness: isHeavy ? 0.8 : isWanderer ? 0.25 : 0.54,
+    roughness: isStealth || isWanderer ? 0.72 : 0.44,
+    emissive: 0x1a0305,
+    emissiveIntensity: 0.08,
+  });
+  const trimMat = new THREE.MeshStandardMaterial({
+    color: def.trimColor,
+    normalMap: textures.metalNormal,
+    normalScale: new THREE.Vector2(0.9, 0.9),
+    metalness: isWanderer ? 0.22 : 0.68,
+    roughness: isWanderer ? 0.68 : 0.36,
+    emissive: 0x160204,
+    emissiveIntensity: 0.06,
+  });
+  const undersuitMat = new THREE.MeshStandardMaterial({
+    color: isMedic ? 0x1e293b : isWanderer ? 0x292019 : 0x222732,
+    normalMap: textures.metalNormal,
+    normalScale: new THREE.Vector2(0.5, 0.5),
+    metalness: 0.2,
+    roughness: 0.76,
+  });
+  const gloveMat = new THREE.MeshStandardMaterial({
+    color: isMedic ? 0xdbeafe : isHeavy ? 0x3b4048 : 0x14171c,
+    roughness: 0.58,
+    metalness: isHeavy ? 0.65 : 0.25,
+  });
+  const dirtMat = new THREE.MeshStandardMaterial({
+    color: 0x3b2c1d,
+    roughness: 0.92,
+    metalness: 0.04,
+    transparent: true,
+    opacity: 0.42 + suitWear * 0.42,
+  });
+  const bloodWearMat = new THREE.MeshStandardMaterial({
+    color: 0x6b0f16,
+    roughness: 0.32,
+    metalness: 0.06,
+    transparent: true,
+    opacity: 0.38 + suitWear * 0.48,
+  });
+
+  const skinToneHex =
+    charId === 'reaper'
+      ? 0xc99c80
+      : charId === 'ghost'
+        ? 0xd6b097
+        : charId === 'titan'
+          ? 0x8f6349
+          : charId === 'patch'
+            ? 0xdcb8a2
+            : charId === 'phantom'
+              ? 0xb8998c
+              : charId === 'engineer'
+                ? 0xc89572
+                : charId === 'wanderer'
+                  ? 0xb07c5b
+                  : 0xb98d72;
+
+  const healthySkinColor = new THREE.Color(skinToneHex);
+  const necroticSkinColor = new THREE.Color(0x7c867a);
+  const skinMat = new THREE.MeshStandardMaterial({
+    color: skinToneHex,
+    roughness: 0.62,
+    metalness: 0.04,
+    emissive: 0x220407,
+    emissiveIntensity: 0.0,
+  });
+  const visorMat = new THREE.MeshStandardMaterial({
+    color: def.visorColor,
+    emissive: def.visorColor,
+    emissiveIntensity: 1.5,
+    roughness: 0.16,
+    metalness: 0.22,
+  });
+
+  // Corrupted bioluminescent infection materials (crimson + toxic ember glow)
+  const veinMat = new THREE.MeshStandardMaterial({
+    color: 0x991b1b,
+    emissive: 0xdc2626,
+    emissiveIntensity: 0.15,
+    roughness: 0.24,
+    metalness: 0.06,
+    transparent: true,
+    opacity: 0.0,
+  });
+  const eyeGlowMat = new THREE.MeshStandardMaterial({
+    color: 0xef4444,
+    emissive: 0xea580c,
+    emissiveIntensity: 0.0,
+    roughness: 0.12,
+    metalness: 0.08,
+  });
+  const tumorMat = new THREE.MeshPhysicalMaterial({
+    color: 0x450a0a,
+    map: textures.infectedFleshMap,
+    normalMap: textures.infectedFleshNormal,
+    normalScale: new THREE.Vector2(1.8, 1.8),
+    emissive: 0xc2410c,
+    emissiveMap: textures.infectedEmissiveMap,
+    emissiveIntensity: 0.15,
+    roughness: 0.34,
+    metalness: 0.05,
+    clearcoat: 0.85,
+    clearcoatRoughness: 0.15,
+  });
+  const tendrilMat = new THREE.MeshPhysicalMaterial({
+    color: 0x2b070c,
+    emissive: 0xb91c1c,
+    emissiveIntensity: 0.85,
+    roughness: 0.28,
+    clearcoat: 0.9,
+  });
+
+  const flashMaterials: THREE.MeshStandardMaterial[] = [armorMat, trimMat, skinMat, veinMat];
+  const flashBaseEmissives = flashMaterials.map((m) => ({
+    hex: m.emissive.getHex(),
+    intensity: m.emissiveIntensity,
+  }));
+
+  const addHitMesh = (mesh: THREE.Mesh, zone: string) => {
+    mesh.userData.hitZone = zone;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    hitMeshes.push(mesh);
+    return mesh;
+  };
+
+  const addGrowth = (parent: THREE.Object3D, pos: [number, number, number], r: number, seed: number) => {
+    const m = new THREE.Mesh(createOrganicTumorGeometry(r, seed, 1), tumorMat);
+    m.position.set(pos[0], pos[1], pos[2]);
+    m.scale.setScalar(0.01);
+    m.visible = false;
+    parent.add(m);
+    tumorMeshes.push(m);
+    return m;
+  };
+
+  const addSlitherTendril = (
+    parent: THREE.Object3D,
+    anchor: [number, number, number],
+    rot: [number, number, number],
+    segLen: number,
+    rad: number,
+    phaseOffset: number,
+    convergeAxis: 'x' | 'z'
+  ) => {
+    const root = new THREE.Group();
+    root.position.set(anchor[0], anchor[1], anchor[2]);
+    root.rotation.set(rot[0], rot[1], rot[2]);
+    const segments: THREE.Group[] = [];
+    let cur: THREE.Object3D = root;
+    for (let s = 0; s < 3; s++) {
+      const segPivot = new THREE.Group();
+      if (s > 0) segPivot.position.set(0, segLen, 0);
+      const r0 = rad * (1 - s * 0.25);
+      const r1 = rad * (1 - (s + 1) * 0.26);
+      const mesh = new THREE.Mesh(new THREE.CylinderGeometry(Math.max(0.004, r1), r0, segLen, 5), tendrilMat);
+      mesh.position.y = segLen * 0.5;
+      segPivot.add(mesh);
+      cur.add(segPivot);
+      segments.push(segPivot);
+      cur = segPivot;
+    }
+    root.scale.setScalar(0.01);
+    root.visible = false;
+    parent.add(root);
+    slitherTendrils.push({
+      root,
+      segments,
+      phaseOffset,
+      baseRotX: rot[0],
+      baseRotY: rot[1],
+      baseRotZ: rot[2],
+      convergeAxis,
+    });
+  };
+
+  // Articulated THREE.Bone Skeletal Hierarchy (Pelvis -> Spine -> Neck -> Head / Clavicles -> Limbs -> Fingers)
+  const pelvisBone = new THREE.Bone();
+  pelvisBone.name = 'Pelvis';
+  pelvisBone.position.set(0, 0.98, 0);
+  bodyRoot.add(pelvisBone);
+
+  const spineLowerBone = new THREE.Bone();
+  spineLowerBone.name = 'SpineLower';
+  spineLowerBone.position.set(0, 0.14, 0);
+  pelvisBone.add(spineLowerBone);
+
+  const spineUpperBone = new THREE.Bone();
+  spineUpperBone.name = 'SpineUpper';
+  spineUpperBone.position.set(0, 0.16, 0);
+  spineLowerBone.add(spineUpperBone);
+
+  // Offset mount preserves exact chest-relative local coordinates while riding on SpineUpper bone
+  const torsoGroup = new THREE.Group();
+  torsoGroup.position.set(0, -0.3, 0);
+  spineUpperBone.add(torsoGroup);
+
+  const allBones: THREE.Bone[] = [pelvisBone, spineLowerBone, spineUpperBone];
+  let thighBoneL!: THREE.Bone;
+  let thighBoneR!: THREE.Bone;
+  let shinBoneL!: THREE.Bone;
+  let shinBoneR!: THREE.Bone;
+  let footBoneL!: THREE.Bone;
+  let footBoneR!: THREE.Bone;
+
+  // Articulated Bone Legs with Thigh, Shin & Ankle/Foot Pivots
+  [
+    { x: -0.135 * bulk, side: -1, phase: 0 },
+    { x: 0.135 * bulk, side: 1, phase: Math.PI },
+  ].forEach(({ x, side, phase }) => {
+    const hip = new THREE.Bone();
+    hip.name = side < 0 ? 'ThighL' : 'ThighR';
+    hip.position.set(x, -0.06, 0);
+
+    const thigh = addHitMesh(
+      new THREE.Mesh(createMuscleBellyGeometry(0.088 * bulk, 0.44, 10), undersuitMat),
+      'leg'
+    );
+    thigh.position.set(0, -0.2, 0);
+    const thighPlate = new THREE.Mesh(new THREE.BoxGeometry(0.055 * bulk, 0.25, 0.15), trimMat);
+    thighPlate.position.set(side * 0.088 * bulk, -0.2, 0.01);
+    const holster = new THREE.Mesh(new THREE.BoxGeometry(0.065 * bulk, 0.16, 0.12), armorMat);
+    holster.position.set(side * 0.105 * bulk, -0.24, 0.03);
+    const thighVein = new THREE.Mesh(
+      createVeinTube([[0, -0.05, 0.07], [side * 0.04, -0.22, 0.09], [0, -0.38, 0.08]], 0.014),
+      veinMat
+    );
+    veinMeshes.push(thighVein);
+    hip.add(thigh, thighPlate, holster, thighVein);
+
+    const knee = new THREE.Bone();
+    knee.name = side < 0 ? 'ShinL' : 'ShinR';
+    knee.position.set(0, -0.41, 0);
+    const kneePad = new THREE.Mesh(new THREE.BoxGeometry(0.125 * bulk, 0.115, 0.075), trimMat);
+    kneePad.position.set(0, 0.01, 0.076 * bulk);
+    kneePad.rotation.x = 0.12;
+    const shin = addHitMesh(
+      new THREE.Mesh(createMuscleBellyGeometry(0.068 * bulk, 0.42, 10), armorMat),
+      'leg'
+    );
+    shin.position.set(0, -0.2, 0);
+    const shinGuard = new THREE.Mesh(new THREE.BoxGeometry(0.105 * bulk, 0.32, 0.06), trimMat);
+    shinGuard.position.set(0, -0.2, 0.068 * bulk);
+    shinGuard.rotation.x = -0.06;
+
+    const foot = new THREE.Bone();
+    foot.name = side < 0 ? 'FootL' : 'FootR';
+    foot.position.set(0, -0.455, 0.035);
+    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.148 * bulk, 0.11, 0.27), trimMat);
+    boot.position.set(0, 0, 0);
+    const bootToe = new THREE.Mesh(new THREE.BoxGeometry(0.132 * bulk, 0.07, 0.09), armorMat);
+    bootToe.position.set(0, -0.015, 0.135);
+    const mudSplatter = new THREE.Mesh(new THREE.BoxGeometry(0.152 * bulk, 0.065, 0.28), dirtMat);
+    mudSplatter.position.set(0, -0.02, 0.003);
+    foot.add(boot, bootToe, mudSplatter);
+
+    addGrowth(knee, [side * 0.055 * bulk, 0.02, 0.05], 0.048, side * 2.4 + 1.1);
+    addSlitherTendril(knee, [0, -0.34, 0.07], [0.15, 0, side * 0.12], 0.14, 0.018, side * 1.4, 'x');
+    knee.add(kneePad, shin, shinGuard, foot);
+    hip.add(knee);
+
+    pelvisBone.add(hip);
+    limbs.push(hip);
+    legRigs.push({ hip, knee, phaseOffset: phase, baseHipX: 0, baseKneeX: 0 });
+    allBones.push(hip, knee, foot);
+    if (side < 0) {
+      thighBoneL = hip;
+      shinBoneL = knee;
+      footBoneL = foot;
+    } else {
+      thighBoneR = hip;
+      shinBoneR = knee;
+      footBoneR = foot;
+    }
+  });
+
+  // Pelvis & Belt mount on PelvisBone; Abdomen mounts on SpineLowerBone
+  const pelvis = addHitMesh(new THREE.Mesh(new THREE.BoxGeometry(0.37 * bulk, 0.15, 0.23 * bulk), undersuitMat), 'body');
+  const belt = new THREE.Mesh(new THREE.BoxGeometry(0.42 * bulk, 0.08, 0.29 * bulk), trimMat);
+  belt.position.set(0, 0.09, 0);
+  pelvisBone.add(pelvis, belt);
+
+  for (let p = -1; p <= 1; p += 2) {
+    const pouch = new THREE.Mesh(new THREE.BoxGeometry(0.095 * bulk, 0.1, 0.065), armorMat);
+    pouch.position.set(p * 0.135 * bulk, 0.09, 0.155 * bulk);
+    pelvisBone.add(pouch);
+  }
+
+  const abdomen = addHitMesh(
+    new THREE.Mesh(createMuscleBellyGeometry(0.18 * bulk, 0.28, 12), undersuitMat),
+    'body'
+  );
+  abdomen.scale.set(1.05, 1, 0.7);
+  abdomen.position.set(0, 0.09, 0);
+  spineLowerBone.add(abdomen);
+  const torso = addHitMesh(
+    new THREE.Mesh(
+      new THREE.BoxGeometry(0.4 * bulk, 0.34, 0.24 * bulk),
+      armourDamaged?.destroyedChest && armourDamaged?.destroyedBack ? undersuitMat : armorMat
+    ),
+    'body'
+  );
+  torso.position.set(0, 0.41, 0);
+  const formerChestArmor = new THREE.Group();
+  const formerBackArmor = new THREE.Group();
+  formerChestArmor.visible = !armourDamaged?.destroyedChest;
+  formerBackArmor.visible = !armourDamaged?.destroyedBack;
+  torsoGroup.add(abdomen, torso, formerChestArmor, formerBackArmor);
+
+  const sternumPlate = addHitMesh(new THREE.Mesh(new THREE.BoxGeometry(0.36 * bulk, 0.28, 0.31 * bulk), trimMat), 'armor');
+  sternumPlate.position.set(0, 0.42, 0.015);
+  sternumPlate.rotation.x = -0.06;
+  formerChestArmor.add(sternumPlate);
+  [-0.11 * bulk, 0.11 * bulk].forEach((cx) => {
+    const pecPlate = new THREE.Mesh(new THREE.BoxGeometry(0.16 * bulk, 0.15, 0.06), armorMat);
+    pecPlate.position.set(cx, 0.46, 0.16 * bulk);
+    pecPlate.rotation.y = cx < 0 ? 0.14 : -0.14;
+    formerChestArmor.add(pecPlate);
+  });
+  const spinePack = new THREE.Mesh(new THREE.BoxGeometry(0.24 * bulk, 0.36, 0.12), trimMat);
+  spinePack.position.set(0, 0.4, -0.16 * bulk);
+  const collarGuard = new THREE.Mesh(new THREE.TorusGeometry(0.14 * bulk, 0.04, 8, 18, Math.PI * 1.45), trimMat);
+  collarGuard.rotation.x = Math.PI / 2;
+  collarGuard.rotation.z = -Math.PI * 0.22;
+  collarGuard.position.set(0, 0.58, -0.01);
+  const chestScuff = new THREE.Mesh(new THREE.BoxGeometry(0.22 * bulk, 0.11, 0.015), bloodWearMat);
+  chestScuff.position.set(-0.07 * bulk, 0.42, 0.185 * bulk);
+  chestScuff.rotation.z = 0.28;
+  formerChestArmor.add(chestScuff);
+  formerBackArmor.add(spinePack);
+  torsoGroup.add(collarGuard);
+
+  // Corrupted Chest & Rib Veins + Growths + Slithering Tendrils converging toward chest/neck
+  const chestVeinL = new THREE.Mesh(
+    createVeinTube(
+      [
+        [-0.16 * bulk, 0.24, 0.14 * bulk],
+        [-0.08 * bulk, 0.38, 0.18 * bulk],
+        [-0.02 * bulk, 0.56, 0.14 * bulk],
+      ],
+      0.015
+    ),
+    veinMat
+  );
+  const chestVeinR = new THREE.Mesh(
+    createVeinTube(
+      [
+        [0.16 * bulk, 0.26, 0.14 * bulk],
+        [0.09 * bulk, 0.42, 0.18 * bulk],
+        [0.03 * bulk, 0.57, 0.13 * bulk],
+      ],
+      0.015
+    ),
+    veinMat
+  );
+  veinMeshes.push(chestVeinL, chestVeinR);
+  torsoGroup.add(chestVeinL, chestVeinR);
+  addGrowth(torsoGroup, [-0.1 * bulk, 0.44, 0.17 * bulk], 0.068, 3.1);
+  addGrowth(torsoGroup, [0.12 * bulk, 0.36, 0.16 * bulk], 0.058, 5.4);
+  addGrowth(torsoGroup, [0.02, 0.48, -0.19 * bulk], 0.072, 7.2);
+  addSlitherTendril(torsoGroup, [-0.15 * bulk, 0.22, 0.15 * bulk], [0.15, 0, -0.32], 0.13, 0.019, 0.5, 'z');
+  addSlitherTendril(torsoGroup, [0.15 * bulk, 0.22, 0.15 * bulk], [0.15, 0, 0.32], 0.13, 0.019, 2.2, 'z');
+  addSlitherTendril(torsoGroup, [-0.08 * bulk, 0.46, -0.17 * bulk], [-0.25, 0, -0.22], 0.14, 0.02, 4.1, 'x');
+  addSlitherTendril(torsoGroup, [0.08 * bulk, 0.46, -0.17 * bulk], [-0.25, 0, 0.22], 0.14, 0.02, 5.7, 'x');
+
+  // Preserve unique operative silhouettes
+  if (charId === 'reaper') {
+    for (let m = -1; m <= 1; m++) {
+      const magPouch = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.14, 0.06), undersuitMat);
+      magPouch.position.set(m * 0.095, 0.33, 0.175);
+      torsoGroup.add(magPouch);
+    }
+    const tallyPlate = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.16, 0.025), visorMat);
+    tallyPlate.position.set(0.11, 0.48, 0.178);
+    formerChestArmor.add(tallyPlate);
+  } else if (charId === 'ghost') {
+    const shroudCape = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.58, 0.04), undersuitMat);
+    shroudCape.position.set(0, 0.28, -0.18);
+    shroudCape.rotation.x = 0.12;
+    const rangefinderPack = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.28, 0.12), armorMat);
+    rangefinderPack.position.set(0, 0.44, -0.19);
+    const scarfCollar = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.052, 8, 16), undersuitMat);
+    scarfCollar.rotation.x = Math.PI / 2;
+    scarfCollar.position.set(0, 0.61, 0.01);
+    torsoGroup.add(shroudCape, scarfCollar);
+    formerBackArmor.add(rangefinderPack);
+  } else if (charId === 'titan' || charId === 'brute') {
+    [-0.36, 0.36].forEach((sx) => {
+      const pauldron = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.24, 0.34), trimMat);
+      pauldron.position.set(sx, 0.54, 0);
+      pauldron.rotation.z = sx < 0 ? 0.24 : -0.24;
+      torsoGroup.add(pauldron);
+    });
+    const blastCollar = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.12, 0.34), armorMat);
+    blastCollar.position.set(0, 0.57, 0.02);
+    const reactorVent = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 0.22, 10), visorMat);
+    reactorVent.rotation.x = Math.PI / 2;
+    reactorVent.position.set(0, 0.45, -0.24);
+    formerChestArmor.add(blastCollar);
+    formerBackArmor.add(reactorVent);
+  } else if (charId === 'patch') {
+    const whiteMedMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.45, metalness: 0.16 });
+    const crossH = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.04, 0.02), visorMat);
+    const crossV = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.14, 0.02), visorMat);
+    crossH.position.set(0, 0.45, 0.185);
+    crossV.position.set(0, 0.45, 0.185);
+    const bioTank = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.085, 0.4, 12), whiteMedMat);
+    bioTank.position.set(-0.08, 0.42, -0.21);
+    const stimTube = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.36, 8), visorMat);
+    stimTube.position.set(0.09, 0.42, -0.21);
+    formerChestArmor.add(crossH, crossV);
+    formerBackArmor.add(bioTank, stimTube);
+  } else if (charId === 'phantom') {
+    const cloakDrape = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.16, 0.28, 0.72, 10, 1, true, 0.6, Math.PI * 1.4),
+      undersuitMat
+    );
+    cloakDrape.position.set(0, 0.25, -0.08);
+    cloakDrape.material.side = THREE.DoubleSide;
+    const phaseHarness = new THREE.Mesh(new THREE.TorusGeometry(0.11, 0.015, 8, 16), visorMat);
+    phaseHarness.position.set(0, 0.44, 0.16);
+    const bladeScabbard = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.44, 0.05), trimMat);
+    bladeScabbard.position.set(0.14, 0.42, -0.19);
+    bladeScabbard.rotation.z = -0.35;
+    torsoGroup.add(cloakDrape);
+    formerChestArmor.add(phaseHarness);
+    formerBackArmor.add(bladeScabbard);
+  } else if (charId === 'engineer' || charId === 'nyx') {
+    const backpack = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.38, 0.16), trimMat);
+    backpack.position.set(0, 0.38, -0.22);
+    const servoArm = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.36, 0.06), armorMat);
+    servoArm.position.set(-0.15, 0.62, -0.2);
+    servoArm.rotation.z = 0.28;
+    const antenna = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 0.38, 8), visorMat);
+    antenna.position.set(0.12, 0.68, -0.24);
+    formerBackArmor.add(backpack, servoArm, antenna);
+  } else if (charId === 'wanderer') {
+    const coatL = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.56, 0.05), trimMat);
+    coatL.position.set(-0.14, -0.02, -0.14);
+    coatL.rotation.z = -0.08;
+    const coatR = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.56, 0.05), trimMat);
+    coatR.position.set(0.14, -0.02, -0.14);
+    coatR.rotation.z = 0.08;
+    const bandolier = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.48, 0.32), trimMat);
+    bandolier.position.set(0, 0.41, 0.01);
+    bandolier.rotation.z = 0.52;
+    torsoGroup.add(coatL, coatR, bandolier);
+  }
+
+  // Articulated Neck -> Head -> Jaw Bone Hierarchy
+  const neckBone = new THREE.Bone();
+  neckBone.name = 'Neck';
+  neckBone.position.set(0, 0.34, 0);
+  spineUpperBone.add(neckBone);
+
+  const headBone = new THREE.Bone();
+  headBone.name = 'Head';
+  headBone.position.set(0, 0.05, 0);
+  neckBone.add(headBone);
+
+  const headGroup = new THREE.Group();
+  headGroup.position.set(0, -0.05, 0);
+  headBone.add(headGroup);
+
+  const neck = addHitMesh(new THREE.Mesh(new THREE.CylinderGeometry(0.068, 0.078, 0.14, 10), skinMat), 'neck');
+  neck.position.set(0, 0.01, 0);
+  const headScale = isHeavy ? 1.12 : 1.0;
+
+  const cranium = addHitMesh(new THREE.Mesh(new THREE.SphereGeometry(0.118 * headScale, 14, 12), skinMat), 'head');
+  cranium.scale.set(0.92, 1.06, 1.02);
+  cranium.position.set(0, 0.14, -0.005);
+
+  const jawBone = new THREE.Bone();
+  jawBone.name = 'Jaw';
+  jawBone.position.set(0, 0.028, 0.032);
+  headBone.add(jawBone);
+
+  const jaw = addHitMesh(new THREE.Mesh(new THREE.BoxGeometry(0.135 * headScale, 0.085, 0.135), skinMat), 'head');
+  jaw.rotation.x = 0.1;
+  jawBone.add(jaw);
+
+  const browRidge = new THREE.Mesh(new THREE.BoxGeometry(0.155 * headScale, 0.03, 0.06), skinMat);
+  browRidge.position.set(0, 0.17, 0.095 * headScale);
+
+  const nose = new THREE.Mesh(new THREE.BoxGeometry(0.028 * headScale, 0.052, 0.042), skinMat);
+  nose.position.set(0, 0.132, 0.118 * headScale);
+  nose.rotation.x = -0.18;
+
+  const scleraMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.25 });
+  [-0.042 * headScale, 0.042 * headScale].forEach((ex) => {
+    const eyeWhite = new THREE.Mesh(new THREE.SphereGeometry(0.016, 10, 8), scleraMat);
+    eyeWhite.position.set(ex, 0.148, 0.1 * headScale);
+    const infectedEye = new THREE.Mesh(new THREE.SphereGeometry(0.0125, 10, 8), eyeGlowMat);
+    infectedEye.position.set(ex, 0.148, 0.112 * headScale);
+    eyeMeshes.push(infectedEye);
+    const cheek = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.036, 0.045), skinMat);
+    cheek.position.set(ex * 1.15, 0.115, 0.09 * headScale);
+    headGroup.add(eyeWhite, infectedEye, cheek);
+  });
+
+  const neckVein = new THREE.Mesh(
+    createVeinTube([[0.035, -0.04, 0.05], [0.055, 0.05, 0.06], [0.048, 0.13, 0.09 * headScale]], 0.012),
+    veinMat
+  );
+  veinMeshes.push(neckVein);
+  neckBone.add(neck, neckVein);
+  addGrowth(headGroup, [-0.065 * headScale, 0.04, 0.055], 0.036, 2.7);
+  addGrowth(headGroup, [0.065 * headScale, 0.125, 0.085 * headScale], 0.03, 6.3);
+  headGroup.add(cranium, browRidge, nose);
+  allBones.push(neckBone, headBone, jawBone);
+
+  if (charId === 'reaper') {
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.132, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.56), armorMat);
+    cap.position.set(0, 0.15, -0.008);
+    const halfMask = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.075, 0.12), trimMat);
+    halfMask.position.set(0, 0.072, 0.065);
+    const visorSlit = new THREE.Mesh(new THREE.BoxGeometry(0.155, 0.034, 0.045), visorMat);
+    visorSlit.position.set(0, 0.152, 0.11);
+    headGroup.add(cap, halfMask, visorSlit);
+  } else if (charId === 'ghost') {
+    const hood = new THREE.Mesh(new THREE.SphereGeometry(0.138, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.72), undersuitMat);
+    hood.position.set(0, 0.145, -0.015);
+    const faceScarf = new THREE.Mesh(new THREE.BoxGeometry(0.165, 0.085, 0.14), undersuitMat);
+    faceScarf.position.set(0, 0.07, 0.055);
+    const monocle = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.04, 12), visorMat);
+    monocle.rotation.x = Math.PI / 2;
+    monocle.position.set(0.045, 0.152, 0.122);
+    headGroup.add(hood, faceScarf, monocle);
+  } else if (charId === 'titan' || charId === 'brute') {
+    const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.142 * headScale, 16, 12), armorMat);
+    helmet.scale.set(0.98, 1.05, 1.08);
+    helmet.position.set(0, 0.155, -0.01);
+    const browShield = new THREE.Mesh(new THREE.BoxGeometry(0.22 * headScale, 0.055, 0.22), trimMat);
+    browShield.position.set(0, 0.215, 0.03);
+    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.175 * headScale, 0.04, 0.055), visorMat);
+    visor.position.set(0, 0.155, 0.125);
+    const jawGrille = new THREE.Mesh(new THREE.BoxGeometry(0.18 * headScale, 0.07, 0.16), trimMat);
+    jawGrille.position.set(0, 0.075, 0.05);
+    headGroup.add(helmet, browShield, visor, jawGrille);
+  } else if (charId === 'patch') {
+    const medCap = new THREE.Mesh(new THREE.SphereGeometry(0.132, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.52), trimMat);
+    medCap.position.set(0, 0.155, -0.01);
+    const goggles = new THREE.Mesh(new THREE.BoxGeometry(0.155, 0.042, 0.045), visorMat);
+    goggles.position.set(0, 0.15, 0.112);
+    const respMask = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.068, 0.07, 10), armorMat);
+    respMask.rotation.x = Math.PI / 2;
+    respMask.position.set(0, 0.08, 0.105);
+    headGroup.add(medCap, goggles, respMask);
+  } else if (charId === 'phantom') {
+    const stealthHood = new THREE.Mesh(new THREE.SphereGeometry(0.136, 14, 12, 0, Math.PI * 2, 0, Math.PI * 0.68), armorMat);
+    stealthHood.position.set(0, 0.148, -0.012);
+    const shadowMask = new THREE.Mesh(new THREE.BoxGeometry(0.155, 0.075, 0.12), armorMat);
+    shadowMask.position.set(0, 0.075, 0.062);
+    [-0.04, 0.04].forEach((ox) => {
+      const optic = new THREE.Mesh(new THREE.SphereGeometry(0.018, 8, 8), visorMat);
+      optic.position.set(ox, 0.15, 0.115);
+      headGroup.add(optic);
+    });
+    headGroup.add(stealthHood, shadowMask);
+  } else if (charId === 'engineer' || charId === 'nyx') {
+    const hardhat = new THREE.Mesh(new THREE.SphereGeometry(0.134, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.5), armorMat);
+    hardhat.position.set(0, 0.16, -0.005);
+    const brim = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.024, 0.12), trimMat);
+    brim.position.set(0, 0.195, 0.095);
+    const multiLens = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.038, 0.048), visorMat);
+    multiLens.position.set(0, 0.154, 0.112);
+    const comms = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.18, 6), trimMat);
+    comms.position.set(0.13, 0.24, -0.02);
+    headGroup.add(hardhat, brim, multiLens, comms);
+  } else if (charId === 'wanderer') {
+    const hatCrown = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.128, 0.1, 12), trimMat);
+    hatCrown.position.set(0, 0.23, -0.005);
+    const hatBrim = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.23, 0.018, 16), trimMat);
+    hatBrim.position.set(0, 0.19, 0.01);
+    const goggles = new THREE.Mesh(new THREE.BoxGeometry(0.145, 0.036, 0.04), visorMat);
+    goggles.position.set(0, 0.162, 0.112);
+    const bandana = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.065, 0.125), undersuitMat);
+    bandana.position.set(0, 0.068, 0.052);
+    headGroup.add(hatCrown, hatBrim, goggles, bandana);
+  } else {
+    const helmetDome = new THREE.Mesh(new THREE.SphereGeometry(0.132 * headScale, 16, 14), armorMat);
+    helmetDome.scale.set(0.95, 1.06, 1.08);
+    helmetDome.position.set(0, 0.15, -0.01);
+    const jawGuard = new THREE.Mesh(new THREE.BoxGeometry(0.19 * headScale, 0.11, 0.19), trimMat);
+    jawGuard.position.set(0, 0.09, 0.045);
+    jawGuard.rotation.x = 0.14;
+    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.165 * headScale, 0.042, 0.055), visorMat);
+    visor.position.set(0, 0.155, 0.118);
+    headGroup.add(helmetDome, jawGuard, visor);
+  }
+
+  // Articulated Arms (Shoulder + Elbow + Articulated Finger Hands) + Weapon Mount
+  const buildInfectedWeapon = (wId: WeaponId) => {
+    const built = buildWeaponMesh(wId, textures);
+    built.group.traverse((obj) => {
+      obj.userData.nonLootable = true;
+      obj.userData.corruptedProp = true;
+      if (obj instanceof THREE.Mesh) {
+        obj.castShadow = true;
+      }
+    });
+    // Add dark corrupted infection growth & glowing crimson vein onto weapon receiver
+    const wepTumor = addGrowth(built.group, [0.02, 0.04, 0.04], 0.032, wId.length * 1.9);
+    wepTumor.visible = true;
+    wepTumor.scale.setScalar(1);
+    const wepVein = new THREE.Mesh(
+      createVeinTube([[-0.02, 0.03, -0.1], [0.025, 0.045, 0.04], [0.01, 0.02, 0.18]], 0.008),
+      veinMat
+    );
+    veinMeshes.push(wepVein);
+    built.group.add(wepVein);
+    return built;
+  };
+
+  const primBuilt = buildInfectedWeapon(primaryWeaponId);
+  const secBuilt = buildInfectedWeapon(secondaryWeaponId);
+  const corruptedMuzzleFlash = new THREE.Mesh(
+    new THREE.ConeGeometry(0.065, 0.22, 6),
+    new THREE.MeshBasicMaterial({ color: 0xf43f5e, transparent: true, opacity: 0.92, depthWrite: false })
+  );
+  corruptedMuzzleFlash.rotation.x = Math.PI / 2;
+  corruptedMuzzleFlash.position.set(0, 0.02, 0.55);
+  corruptedMuzzleFlash.visible = false;
+
+  // Holstered secondary on hip/back
+  secBuilt.group.position.set(-0.22 * bulk, 0.22, -0.05);
+  secBuilt.group.rotation.set(1.2, 0.2, 0.15);
+  torsoGroup.add(secBuilt.group);
+
+  let rightHandPivot: THREE.Bone | null = null;
+  let clavicleBoneL!: THREE.Bone;
+  let clavicleBoneR!: THREE.Bone;
+  let upperArmBoneL!: THREE.Bone;
+  let upperArmBoneR!: THREE.Bone;
+  let forearmBoneL!: THREE.Bone;
+  let forearmBoneR!: THREE.Bone;
+  let handBoneL!: THREE.Bone;
+  let handBoneR!: THREE.Bone;
+
+  [
+    { x: -0.275 * bulk, dir: -1, phase: Math.PI, fingers: leftFingerGroups },
+    { x: 0.275 * bulk, dir: 1, phase: 0, fingers: rightFingerGroups },
+  ].forEach(({ x, dir, phase, fingers }) => {
+    const clavicle = new THREE.Bone();
+    clavicle.name = dir < 0 ? 'ClavicleL' : 'ClavicleR';
+    clavicle.position.set(dir * 0.12 * bulk, 0.2, 0);
+    spineUpperBone.add(clavicle);
+
+    const shoulder = new THREE.Bone();
+    shoulder.name = dir < 0 ? 'UpperArmL' : 'UpperArmR';
+    shoulder.position.set(x - dir * 0.12 * bulk, 0, 0);
+
+    const pauldron = new THREE.Mesh(new THREE.BoxGeometry(0.145 * bulk, 0.16, 0.21), trimMat);
+    pauldron.position.set(dir * 0.01, 0, 0);
+    pauldron.rotation.z = -dir * 0.28;
+    const upperArm = addHitMesh(
+      new THREE.Mesh(createMuscleBellyGeometry(0.058 * bulk, 0.26, 10), undersuitMat),
+      'body'
+    );
+    upperArm.position.set(0, -0.14, 0);
+    shoulder.add(pauldron, upperArm);
+
+    const elbow = new THREE.Bone();
+    elbow.name = dir < 0 ? 'ForearmL' : 'ForearmR';
+    elbow.position.set(0, -0.26, 0);
+    const forearm = addHitMesh(
+      new THREE.Mesh(new THREE.BoxGeometry(0.095 * bulk, 0.25, 0.1), armorMat),
+      'body'
+    );
+    forearm.position.set(0, -0.13, 0);
+    const armVein = new THREE.Mesh(
+      createVeinTube([[0, -0.03, 0.04], [dir * 0.025, -0.14, 0.055], [0, -0.24, 0.045]], 0.011),
+      veinMat
+    );
+    veinMeshes.push(armVein);
+    addGrowth(elbow, [dir * 0.04 * bulk, -0.02, 0.03], 0.036, dir * 3.2 + 2.0);
+    addSlitherTendril(elbow, [0, -0.24, 0.045], [0.1, 0, dir * 0.1], 0.11, 0.015, phase + 0.7, 'x');
+
+    const handPivot = new THREE.Bone();
+    handPivot.name = dir < 0 ? 'HandL' : 'HandR';
+    handPivot.position.set(0, -0.26, 0.01);
+    const palm = new THREE.Mesh(new THREE.BoxGeometry(0.075 * bulk, 0.07, 0.055), gloveMat);
+    handPivot.add(palm);
+
+    // 4 articulated finger THREE.Bones so digits twitch independently during infection
+    for (let f = 0; f < 4; f++) {
+      const fPivot = new THREE.Bone();
+      fPivot.name = `${dir < 0 ? 'FingerL' : 'FingerR'}_${f}`;
+      fPivot.position.set((f - 1.5) * 0.017 * bulk, -0.035, 0.018);
+      const digit = new THREE.Mesh(new THREE.BoxGeometry(0.013 * bulk, 0.048, 0.014), skinMat);
+      digit.position.y = -0.022;
+      fPivot.add(digit);
+      handPivot.add(fPivot);
+      fingers.push(fPivot);
+      allBones.push(fPivot);
+    }
+
+    if (dir === 1) {
+      rightHandPivot = handPivot;
+      primBuilt.group.position.set(-0.02, -0.02, 0.24);
+      primBuilt.group.rotation.set(Math.PI / 2, Math.PI, 0);
+      primBuilt.group.add(corruptedMuzzleFlash);
+      handPivot.add(primBuilt.group);
+    }
+
+    elbow.add(forearm, armVein, handPivot);
+    shoulder.add(elbow);
+    clavicle.add(shoulder);
+    limbs.push(shoulder);
+    armRigs.push({
+      shoulder,
+      elbow,
+      phaseOffset: phase,
+      baseShoulderX: dir === 1 ? -0.45 : -0.18,
+      baseElbowX: dir === 1 ? -0.65 : -0.32,
+    });
+    allBones.push(clavicle, shoulder, elbow, handPivot);
+    if (dir < 0) {
+      clavicleBoneL = clavicle;
+      upperArmBoneL = shoulder;
+      forearmBoneL = elbow;
+      handBoneL = handPivot;
+    } else {
+      clavicleBoneR = clavicle;
+      upperArmBoneR = shoulder;
+      forearmBoneR = elbow;
+      handBoneR = handPivot;
+    }
+  });
+
+  if (!rightHandPivot) {
+    torsoGroup.add(primBuilt.group);
+  }
+
+  const skeleton = new THREE.Skeleton(allBones);
+  const bones: CorpseSkeletonBones = {
+    pelvis: pelvisBone,
+    spineLower: spineLowerBone,
+    spineUpper: spineUpperBone,
+    neck: neckBone,
+    head: headBone,
+    jaw: jawBone,
+    clavicleL: clavicleBoneL,
+    clavicleR: clavicleBoneR,
+    upperArmL: upperArmBoneL,
+    upperArmR: upperArmBoneR,
+    forearmL: forearmBoneL,
+    forearmR: forearmBoneR,
+    handL: handBoneL,
+    handR: handBoneR,
+    thighL: thighBoneL,
+    thighR: thighBoneR,
+    shinL: shinBoneL,
+    shinR: shinBoneR,
+    footL: footBoneL,
+    footR: footBoneR,
+  };
+
+  // Light-reactive black + dark-crimson spore particle cloud (capped at 32 particles for perf)
+  const SPORE_COUNT = 32;
+  const sporePositions = new Float32Array(SPORE_COUNT * 3);
+  const sporeBaseOffsets = new Float32Array(SPORE_COUNT * 3);
+  for (let i = 0; i < SPORE_COUNT; i++) {
+    const a = (i / SPORE_COUNT) * Math.PI * 2 + Math.random() * 0.4;
+    const rad = 0.28 + Math.random() * 0.65;
+    const y = 0.15 + Math.random() * 1.6;
+    sporeBaseOffsets[i * 3] = Math.cos(a) * rad;
+    sporeBaseOffsets[i * 3 + 1] = y;
+    sporeBaseOffsets[i * 3 + 2] = Math.sin(a) * rad;
+    sporePositions[i * 3] = sporeBaseOffsets[i * 3];
+    sporePositions[i * 3 + 1] = y;
+    sporePositions[i * 3 + 2] = sporeBaseOffsets[i * 3 + 2];
+  }
+  const sporeGeo = new THREE.BufferGeometry();
+  sporeGeo.setAttribute('position', new THREE.BufferAttribute(sporePositions, 3));
+  const sporeMat = new THREE.PointsMaterial({
+    color: 0x1c080b,
+    size: 0.085,
+    transparent: true,
+    opacity: 0.0,
+    depthWrite: false,
+  });
+  const sporePoints = new THREE.Points(sporeGeo, sporeMat);
+  sporePoints.visible = false;
+  group.add(sporePoints);
+
+  const shadowPlane = makeContactShadow(textures, 0.68 * bulk);
+  group.add(shadowPlane);
+  group.scale.setScalar(heightScale);
+
+  const formerRig: FormerModelRig = {
+    bodyRoot,
+    skeleton,
+    bones,
+    skinMat,
+    healthySkinColor,
+    necroticSkinColor,
+    armorMat,
+    trimMat,
+    visorMat,
+    veinMat,
+    eyeGlowMat,
+    tumorMat,
+    tumorMeshes,
+    veinMeshes,
+    slitherTendrils,
+    sporePoints,
+    sporeMat,
+    sporeBaseOffsets,
+    leftFingerGroups,
+    rightFingerGroups,
+    primaryWeaponGroup: primBuilt.group,
+    secondaryWeaponGroup: secBuilt.group,
+    corruptedMuzzleFlash,
+    activeWeaponSlot: 0,
+    limpSide,
+  };
+
+  return {
+    group,
+    hitMeshes,
+    limbs,
+    legRigs,
+    armRigs,
+    tendrils,
+    tentacleChains,
+    torsoExclusionRadius: 0.42 * bulk,
+    mandibleFlaps,
+    destructibleArmor,
+    torsoPulse: spineLowerBone,
+    headGroup: headBone,
+    jawGroup: jawBone,
+    shadowPlane,
+    flashMaterials,
+    flashBaseEmissives,
+    eyeMeshes,
+    coreMaterials: [veinMat, eyeGlowMat],
+    formerRig,
+  };
 }

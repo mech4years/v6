@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { CHARACTERS } from '../game/data';
 import { computeLubDubPulse } from '../game/heartbeatCurve';
-import { CharacterId, HudSnapshot } from '../game/types';
+import { ArmourPieceId, ArmourPieceHudSnapshot, CharacterId, HudSnapshot } from '../game/types';
 
 interface Props {
   characterId: CharacterId;
@@ -128,10 +128,20 @@ export const SuitBodyCheckPanel: React.FC<Props> = ({
           ? `Hostile bio-signature detected at ${hud.nearestThreatDistance}m.`
           : 'Immediate perimeter free of close-range bio-signatures.';
 
+      const brokenPlates: string[] = [];
+      if (hud.armourPieces?.chest.stage !== 'intact' && hud.armourPieces?.chest) {
+        brokenPlates.push('CHEST');
+      }
+      if (hud.armourPieces?.back.stage !== 'intact' && hud.armourPieces?.back) {
+        brokenPlates.push('BACK');
+      }
+
       const traumaNote =
-        lowestEntry[1] < 80
-          ? `${lowestEntry[0]} shows highest wear (${lowestEntry[1]}%).`
-          : 'All anatomical armor zones within nominal structural tolerances.';
+        brokenPlates.length > 0
+          ? `${brokenPlates.join(' & ')} armour plate(s) destroyed — replace at an Armory Workbench.`
+          : lowestEntry[1] < 80
+            ? `${lowestEntry[0]} shows highest wear (${lowestEntry[1]}%).`
+            : 'All anatomical armor zones within nominal structural tolerances.';
 
       setLastSweepReport(`${traumaNote} ${threatNote}`);
     }, 1100);
@@ -224,12 +234,15 @@ export const SuitBodyCheckPanel: React.FC<Props> = ({
               OPERATIVE BIOMETRIC SCHEMATIC
             </h3>
             <p className="text-[11px] font-mono-tech text-zinc-400">
-              {charDef.callsign} · {charDef.role}
+              {charDef.callsign} · {charDef.classification ?? charDef.role}
             </p>
           </div>
-          <span className="font-mono-tech text-xs text-sky-300 tabular-nums">
-            SUIT {hud.suitIntegrity}%
-          </span>
+          <div className="text-right font-mono-tech text-xs tabular-nums">
+            <div className="text-sky-300">SUIT {hud.suitIntegrity}%</div>
+            <div className="text-[10px] text-amber-400/90">
+              WEAR {Math.round((hud.playerWear ?? 0) * 100)}%
+            </div>
+          </div>
         </div>
 
         {/* Interactive Body Diagram */}
@@ -281,6 +294,24 @@ export const SuitBodyCheckPanel: React.FC<Props> = ({
                 stroke={torsoStyle.strokeHex}
                 strokeWidth={selectedZone === 'torso' ? 2.4 : 1.3}
               />
+              {hud.armourPieces?.chest && hud.armourPieces.chest.stage !== 'intact' && (
+                <>
+                  <line x1="78" y1="80" x2="138" y2="154" stroke="#ef4444" strokeWidth="2.2" />
+                  <line x1="142" y1="80" x2="82" y2="154" stroke="#ef4444" strokeWidth="2.2" />
+                </>
+              )}
+              {hud.armourPieces?.back && hud.armourPieces.back.stage !== 'intact' && (
+                <rect
+                  x="76"
+                  y="78"
+                  width="68"
+                  height="80"
+                  fill="none"
+                  stroke="#f97316"
+                  strokeWidth="1.5"
+                  strokeDasharray="4 3"
+                />
+              )}
               {/* Heart marker */}
               <circle cx="118" cy="106" r="6" fill={torsoStyle.strokeHex} opacity="0.85" />
             </g>
@@ -470,6 +501,84 @@ export const SuitBodyCheckPanel: React.FC<Props> = ({
               );
             })}
           </div>
+
+          {hud.armourPieces && (
+            <div className="pt-3 border-t border-zinc-800 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-display font-bold text-xs tracking-wider text-zinc-200">
+                  7-PIECE BALLISTIC ARMOUR PLATING
+                </span>
+                {hud.bodyArmourLost ? (
+                  <span className="px-2 py-0.5 bg-red-950/90 border border-red-500 text-[10px] font-mono-tech font-bold text-red-300">
+                    BODY ARMOUR LOST · WORKBENCH REPLACEMENT REQUIRED
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-mono-tech text-zinc-400">
+                    CHEST &amp; BACK DESTRUCTIBLE · HELMET/LIMBS PERMANENT
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 tabular-nums">
+                {(
+                  [
+                    'helmet',
+                    'chest',
+                    'back',
+                    'leftArm',
+                    'rightArm',
+                    'leftLeg',
+                    'rightLeg',
+                  ] as ArmourPieceId[]
+                ).map((pieceId) => {
+                  const piece: ArmourPieceHudSnapshot | undefined = hud.armourPieces?.[pieceId];
+                  if (!piece) return null;
+                  const broken = piece.destructible && piece.stage !== 'intact';
+                  const tierColor = broken
+                    ? 'text-red-400'
+                    : piece.damageTier === 'cracked'
+                      ? 'text-orange-400'
+                      : piece.damageTier === 'dented'
+                        ? 'text-amber-300'
+                        : 'text-emerald-400';
+                  const barColor = broken
+                    ? 'bg-red-600'
+                    : piece.damageTier === 'cracked'
+                      ? 'bg-orange-500'
+                      : piece.damageTier === 'dented'
+                        ? 'bg-amber-400'
+                        : 'bg-sky-400';
+                  return (
+                    <div
+                      key={pieceId}
+                      className={`border p-2.5 ${
+                        broken
+                          ? 'border-red-700/80 bg-red-950/25'
+                          : 'border-zinc-800 bg-[#0b0d12]'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between text-[10px] font-mono-tech">
+                        <span className="text-zinc-200 font-semibold truncate">{piece.label}</span>
+                        <span className={tierColor}>
+                          {broken ? 'DESTROYED' : `${piece.pct}%`}
+                        </span>
+                      </div>
+                      <div className="w-full h-1 bg-zinc-900 mt-1.5 overflow-hidden">
+                        <div
+                          className={`h-full transition-all duration-200 ${barColor}`}
+                          style={{ width: `${broken ? 0 : Math.max(0, Math.min(100, piece.pct))}%` }}
+                        />
+                      </div>
+                      <div className="mt-1 flex items-center justify-between text-[9px] font-mono-tech text-zinc-500">
+                        <span>{piece.damageTier.toUpperCase()}</span>
+                        <span>{piece.destructible ? 'BREAKABLE' : 'PERMANENT'}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Suit Subsystems */}

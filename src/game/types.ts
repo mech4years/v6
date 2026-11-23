@@ -9,7 +9,8 @@ export type CharacterId =
   | 'raven'
   | 'brute'
   | 'nyx'
-  | 'zero';
+  | 'zero'
+  | 'god';
 
 export type WeaponId =
   | 'assault_rifle'
@@ -19,7 +20,8 @@ export type WeaponId =
   | 'energy_rifle'
   | 'pistol'
   | 'shotgun'
-  | 'plasma_lance';
+  | 'plasma_lance'
+  | 'vaporiser';
 
 export type EnemyType =
   | 'crawler'
@@ -41,7 +43,8 @@ export type EnemyType =
   | 'helios_unit'
   | 'void_walker'
   | 'harvester'
-  | 'origin';
+  | 'origin'
+  | 'the_former';
 
 export type Difficulty = 'survivor' | 'tactical' | 'nightmare';
 
@@ -544,6 +547,7 @@ export type TouchAction =
   | 'switch'
   | 'heal'
   | 'crouch'
+  | 'crawl'
   | 'melee'
   | 'sprint_toggle';
 
@@ -636,6 +640,101 @@ export interface HudSnapshot {
   inventory: InventoryItem[];
   enemiesDefeated: number;
   elapsedSeconds: number;
+  formerAlert?: FormerHudAlert | null;
+  armourPieces?: Record<ArmourPieceId, ArmourPieceHudSnapshot>;
+  armourBanner?: ArmourBreakBanner | null;
+  bodyArmourLost?: boolean;
+  thirdPersonView?: boolean;
+}
+
+export type ArmourPieceId =
+  | 'helmet'
+  | 'chest'
+  | 'back'
+  | 'leftArm'
+  | 'rightArm'
+  | 'leftLeg'
+  | 'rightLeg';
+
+export type ArmourBreakStage = 'intact' | 'breaking' | 'destroyed';
+export type ArmourDamageTier = 'intact' | 'dented' | 'cracked' | 'destroyed';
+
+export interface ArmourPieceHudSnapshot {
+  id: ArmourPieceId;
+  label: string;
+  durability: number;
+  maxDurability: number;
+  pct: number;
+  destructible: boolean;
+  stage: ArmourBreakStage;
+  damageTier: ArmourDamageTier;
+}
+
+export interface ArmourBreakBanner {
+  title: 'ARMOUR DESTROYED' | 'BODY ARMOUR LOST';
+  subtitle: string;
+  timer: number;
+  critical: boolean;
+}
+
+export interface ArmourCheckpointState {
+  pieces: Record<
+    ArmourPieceId,
+    { durability: number; maxDurability: number; stage: ArmourBreakStage }
+  >;
+}
+
+export type CorpseInfectionStage =
+  | 'still'
+  | 'twitching'
+  | 'infecting'
+  | 'screaming_rise'
+  | 'resurrected'
+  | 'defeated';
+
+export interface WeaponLoadoutSnapshot {
+  primaryId: WeaponId;
+  primaryAmmoInMag: number;
+  primaryReserveAmmo: number;
+  primaryUpgrades: WeaponUpgradeState;
+  secondaryId: WeaponId;
+  secondaryAmmoInMag: number;
+  secondaryReserveAmmo: number;
+  secondaryUpgrades: WeaponUpgradeState;
+  activeSlot: 0 | 1;
+}
+
+export interface FormerCorpseRecord {
+  corpseId: string;
+  ownerPlayerId: string;
+  ownerCallsign: string;
+  characterId: CharacterId;
+  missionId: string;
+  position: { x: number; y: number; z: number };
+  yaw: number;
+  suitWear: number;
+  loadout: WeaponLoadoutSnapshot;
+  stage: CorpseInfectionStage;
+  stageElapsed: number;
+  infectionProgress: number; // 0..1
+  createdAt: number;
+  resurrectedAt?: number;
+  limpSide: -1 | 1;
+  destroyedChest?: boolean;
+  destroyedBack?: boolean;
+}
+
+export interface FormerHudAlert {
+  id: string;
+  tag: string;
+  identityLine: string;
+  subtitle: string;
+  classification: string;
+  threatLevel: string;
+  isOriginalOwner: boolean;
+  stageKind: 'transformation' | 'recognition' | 'unknown';
+  timer: number;
+  maxTimer: number;
 }
 
 export interface CheckpointSave {
@@ -657,4 +756,5 @@ export interface CheckpointSave {
   activatedInteractables: string[];
   missionStage: number;
   savedAt: string;
+  armourState?: ArmourCheckpointState;
 }

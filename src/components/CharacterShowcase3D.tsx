@@ -6,20 +6,25 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { CHARACTERS } from '../game/data';
-import { buildFullBodyCharacter } from '../game/models';
+import { buildFullBodyCharacter, FullBodyCharacterRig } from '../game/models';
 import { createProceduralTextures, ProceduralTextureSet } from '../game/textures';
 import { CharacterId } from '../game/types';
 
 interface Props {
   characterId: CharacterId;
+  cameraMode?: 'full' | 'face';
 }
 
-export const CharacterShowcase3D: React.FC<Props> = ({ characterId }) => {
+export const CharacterShowcase3D: React.FC<Props> = ({ characterId, cameraMode = 'full' }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const texturesRef = useRef<ProceduralTextureSet | null>(null);
   const charGroupRef = useRef<THREE.Group | null>(null);
   const rimLightRef = useRef<THREE.PointLight | null>(null);
+  const pedRingMatRef = useRef<THREE.MeshBasicMaterial | null>(null);
+  const cameraModeRef = useRef<'full' | 'face'>(cameraMode);
+  const charIdRef = useRef<CharacterId>(characterId);
+  const swapPulseRef = useRef(0);
   const dragYawRef = useRef(0.35);
   const isDraggingRef = useRef(false);
   const lastXRef = useRef(0);
@@ -107,10 +112,9 @@ export const CharacterShowcase3D: React.FC<Props> = ({ characterId }) => {
     );
     pedestal.position.y = -0.08;
     pedestal.receiveShadow = true;
-    const pedRing = new THREE.Mesh(
-      new THREE.TorusGeometry(1.06, 0.02, 8, 40),
-      new THREE.MeshBasicMaterial({ color: 0xdc2626 })
-    );
+    const pedRingMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(CHARACTERS[characterId].visorColor) });
+    pedRingMatRef.current = pedRingMat;
+    const pedRing = new THREE.Mesh(new THREE.TorusGeometry(1.06, 0.02, 8, 40), pedRingMat);
     pedRing.rotation.x = Math.PI / 2;
     pedRing.position.y = 0.01;
     scene.add(pedestal, pedRing);
@@ -119,6 +123,9 @@ export const CharacterShowcase3D: React.FC<Props> = ({ characterId }) => {
     const initialGroup = buildFullBodyCharacter(characterId, textures);
     scene.add(initialGroup);
     charGroupRef.current = initialGroup;
+    if (rimLightRef.current) {
+      rimLightRef.current.color.set(CHARACTERS[characterId].visorColor);
+    }
 
     let frameId = 0;
     let disposed = false;
@@ -143,6 +150,10 @@ export const CharacterShowcase3D: React.FC<Props> = ({ characterId }) => {
       frameId = window.setTimeout(poll, 5);
     };
 
+    const camLookTarget = new THREE.Vector3(0, 1.05, 0);
+    const desiredCamPos = new THREE.Vector3();
+    const desiredLook = new THREE.Vector3();
+
     const tick = () => {
       if (disposed) return;
       const now = performance.now();
@@ -151,12 +162,42 @@ export const CharacterShowcase3D: React.FC<Props> = ({ characterId }) => {
       elapsed += dt;
 
       if (!isDraggingRef.current) {
-        dragYawRef.current += dt * 0.42;
+        dragYawRef.current += dt * (cameraModeRef.current === 'face' ? 0.16 : 0.42);
       }
       if (charGroupRef.current) {
         charGroupRef.current.rotation.y = dragYawRef.current;
-        charGroupRef.current.position.y = Math.sin(elapsed * 2.0) * 0.014;
+        charGroupRef.current.position.y = Math.sin(elapsed * 2.0) * 0.012;
+
+        const rig = charGroupRef.current.userData.rig as FullBodyCharacterRig | undefined;
+        if (rig) {
+          const breath = Math.sin(elapsed * 2.3);
+          rig.torsoGroup.scale.y = 1 + breath * 0.014;
+          rig.leftArmGroup.rotation.x = -0.18 + breath * 0.03;
+          rig.rightArmGroup.rotation.x = -0.35 + breath * 0.025;
+          rig.headGroup.rotation.y = Math.sin(elapsed * 0.9) * 0.07;
+          rig.headGroup.rotation.x = Math.sin(elapsed * 1.4) * 0.03;
+        }
       }
+
+      if (swapPulseRef.current > 0) {
+        swapPulseRef.current = Math.max(0, swapPulseRef.current - dt * 2.5);
+      }
+      if (rimLightRef.current) {
+        rimLightRef.current.intensity = 8.5 + swapPulseRef.current * 6.0;
+      }
+
+      const cid = charIdRef.current;
+      const hScale = cid === 'titan' || cid === 'brute' ? 1.12 : cid === 'ghost' || cid === 'phantom' ? 0.98 : 1.0;
+      if (cameraModeRef.current === 'face') {
+        desiredCamPos.set(0.05, 1.69 * hScale, 1.08);
+        desiredLook.set(0, 1.65 * hScale, 0);
+      } else {
+        desiredCamPos.set(0, 1.38, 3.8);
+        desiredLook.set(0, 1.05, 0);
+      }
+      camera.position.lerp(desiredCamPos, Math.min(1, dt * 7.5));
+      camLookTarget.lerp(desiredLook, Math.min(1, dt * 7.5));
+      camera.lookAt(camLookTarget);
 
       if (!contextLost) {
         if (!isSoftwareGl && composer) composer.render();
@@ -231,8 +272,13 @@ export const CharacterShowcase3D: React.FC<Props> = ({ characterId }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    cameraModeRef.current = cameraMode;
+  }, [cameraMode]);
+
   // Swap full-body 3D character mesh when user selects a different operative
   useEffect(() => {
+    charIdRef.current = characterId;
     const scene = sceneRef.current;
     const textures = texturesRef.current;
     if (!scene || !textures) return;
@@ -252,9 +298,13 @@ export const CharacterShowcase3D: React.FC<Props> = ({ characterId }) => {
     nextGroup.rotation.y = dragYawRef.current;
     scene.add(nextGroup);
     charGroupRef.current = nextGroup;
+    swapPulseRef.current = 1;
 
     if (rimLightRef.current) {
       rimLightRef.current.color.set(CHARACTERS[characterId].visorColor);
+    }
+    if (pedRingMatRef.current) {
+      pedRingMatRef.current.color.set(CHARACTERS[characterId].visorColor);
     }
   }, [characterId]);
 

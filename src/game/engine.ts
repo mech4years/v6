@@ -24,8 +24,10 @@ import {
   WEAPONS,
   getUpgradedWeaponStats,
   loadCampaignState,
+  normalizeCharacterId,
   saveCampaignState,
 } from './data';
+import { pickOperativeQuip, QuipCategory, STORY_NPC_LINES } from './characterDialogue';
 import { VolumetricFireSystem } from './fireSystem';
 import { DynamicVolumetricFog } from './volumetricFog';
 import {
@@ -33,22 +35,34 @@ import {
   GeneratorChallengeState,
 } from './generatorMath';
 import {
+  AutomatedTurretRefs,
+  buildAutomatedTurret,
   buildEnemyModel,
   buildFirstPersonRig,
+  buildFormerAndCorpseModel,
+  buildFullBodyCharacter,
+  buildHealingBeacon,
+  buildStoryCharacterModel,
   buildSupportDrone,
   EnemyModelRefs,
   FirstPersonRigRefs,
+  FullBodyCharacterRig,
 } from './models';
 import { createProceduralTextures, ProceduralTextureSet } from './textures';
 import {
+  ArmourBreakBanner,
+  ArmourPieceId,
   BodyCondition,
   CampaignState,
   ChapterStats,
   CharacterId,
   CheckpointSave,
+  CorpseInfectionStage,
   EnemyAIState,
   EnemyType,
   EndingId,
+  FormerCorpseRecord,
+  FormerHudAlert,
   GameSettings,
   HudSnapshot,
   InventoryItem,
@@ -59,6 +73,40 @@ import {
   WeaponId,
   WeaponRuntimeState,
 } from './types';
+import {
+  ALL_ARMOUR_PIECE_IDS,
+  ArmourFragmentBody,
+  ArmourSystemState,
+  applyArmourImpact,
+  bolsterIntactArmour,
+  buildArmourHudSnapshot,
+  createArmourSystemState,
+  disposeArmourFragments,
+  getTotalArmourDurability,
+  isBodyArmourLost,
+  repairAllArmourPieces,
+  serializeArmourState,
+  spawnArmourFragments,
+  updateArmourFragments,
+  updateFullBodyArmourRig,
+} from './armourSystem';
+import {
+  ArmourBreakNetEvent,
+  PlayerNetSnapshot,
+  PlayerNetSyncController,
+} from './playerNetSync';
+import {
+  computeStageFromElapsed,
+  createWeaponLoadoutSnapshot,
+  getActiveMissionCorpses,
+  getLocalPlayerIdentity,
+  LocalPlayerIdentity,
+  markCorpseDefeated,
+  markCorpseResurrected,
+  MAX_ACTIVE_FORMERS_PER_MISSION,
+  recordPlayerDeathCorpse,
+  updateCorpseRecordProgress,
+} from './formerSystem';
 import {
   addEducationalWorldObjects,
   buildMissionOneWorld,
@@ -97,6 +145,11 @@ import {
   triggerMonsterStagger,
   updateMonsterAnimations,
 } from './monsterAnimations';
+import {
+  CorpseConvulsionState,
+  createCorpseConvulsionState,
+  stepCorpseBoneConvulsionSequence,
+} from './corpseConvulsion';
 import {
   countSoundOcclusions,
   NavGrid,
@@ -272,6 +325,52 @@ interface EnemyEntity {
   tentacleState: TentaclePhysicsState;
   ai: MonsterAIRuntime;
   anim: MonsterAnimationState;
+  corpseId?: string;
+  ownerPlayerId?: string;
+  ownerCallsign?: string;
+  formerCharId?: CharacterId;
+  primaryWeaponId?: WeaponId;
+  secondaryWeaponId?: WeaponId;
+  activeWeaponSlot?: 0 | 1;
+  weaponMagAmmo?: number;
+  weaponReserveAmmo?: number;
+  secondaryMagAmmo?: number;
+  secondaryReserveAmmo?: number;
+  formerReloadTimer?: number;
+  formerBurstCount?: number;
+  hesitationState?: 'none' | 'hesitating' | 'overwhelmed';
+  hesitationTimer?: number;
+  hesitationDuration?: number;
+  hesitationCooldown?: number;
+  formerAlertStage?: number;
+  formerMuzzleTimer?: number;
+  formerWeaponRecoil?: number;
+  limpSide?: -1 | 1;
+}
+
+interface ActiveCorpseEntity {
+  record: FormerCorpseRecord;
+  refs: EnemyModelRefs;
+  position: THREE.Vector3;
+  yaw: number;
+  elapsed: number;
+  stage: CorpseInfectionStage;
+  gaspTimer: number;
+  chokeTimer: number;
+  screamFired: boolean;
+  convulsion: CorpseConvulsionState;
+}
+
+interface RemotePlayerEntity {
+  playerId: string;
+  callsign: string;
+  characterId: CharacterId;
+  group: THREE.Group;
+  armourState: ArmourSystemState;
+  position: THREE.Vector3;
+  yaw: number;
+  walkPhase: number;
+  lastTimestamp: number;
 }
 
 interface ShockwaveEffect {
@@ -322,6 +421,7 @@ export interface EngineCallbacks {
   onPauseRequested: () => void;
   onPlayerDied: () => void;
   onOpenEducation?: (entryId: string) => void;
+  onOpenAdminMenu?: () => void;
   onMissionComplete: (
     finaleTitle: string,
     summary: string,
@@ -346,6 +446,7 @@ const BOSS_TYPES: Set<EnemyType> = new Set([
 const BOSS_DISPLAY_NAMES: Partial<Record<EnemyType, { name: string; subtitle: string }>> = {
   forgemaster: { name: 'THE FORGEMASTER', subtitle: 'SMELTER CRUCIBLE OVERLORD' },
   sentinel: { name: 'THE SENTINEL', subtitle: 'AEGIS-IX CORRUPTED COMBAT MECH' },
+  harvester: { name: 'THE HARVESTER', subtitle: 'BIOMECHANICAL RECLAMATION CONSTRUCT' },
   drowned_machine: { name: 'THE DROWNED MACHINE', subtitle: 'SUBMERGED HYDRO-ELECTRIC CONSTRUCT' },
   guardian: { name: 'THE GUARDIAN', subtitle: 'APEX BIO-MECHANICAL ROOT WARDEN' },
   titan: { name: 'THE TITAN', subtitle: 'HEAVY ORBITAL CONSTRUCTION WALKER' },
@@ -430,7 +531,18 @@ export class FirstPersonGameEngine {
   private meleeAnimTimer = 0;
   private healAnimTimer = 0;
   private abilityAnimTimer = 0;
+  private interactAnimTimer = 0;
   private deathAnimTimer = 0;
+
+  // Stances, Vaulting, Knockdown, Wear & Directional Damage
+  private isCrawling = false;
+  private vaultTimer = 0;
+  private vaultStartPos = new THREE.Vector3();
+  private vaultEndPos = new THREE.Vector3();
+  private knockdownTimer = 0;
+  private playerWear = 0;
+  private hurtDirectionDeg: number | null = null;
+  private hurtDirTimer = 0;
 
   // Special Ability
   private abilityActive = false;
@@ -440,6 +552,25 @@ export class FirstPersonGameEngine {
   private droneZapTimer = 0;
   private pulseRingMesh: THREE.Mesh | null = null;
   private pulseRingLife = 0;
+  private turretRefs: AutomatedTurretRefs | null = null;
+  private turretPos = new THREE.Vector3();
+  private turretRemaining = 0;
+  private turretFireCooldown = 0;
+  private turretFlashTimer = 0;
+  private healingBeaconMesh: THREE.Group | null = null;
+  private healingBeaconPos = new THREE.Vector3();
+  private healingBeaconTimer = 0;
+
+  // Companion NPCs, Story Transmissions & Operative Personality Quips
+  private storyNpcGroups: THREE.Group[] = [];
+  private npcLineIndices: Record<string, number> = {};
+  private operativeQuip: { speaker: string; text: string; accentColor: string } | null = null;
+  private operativeQuipTimer = 0;
+  private quipCooldowns: Partial<Record<QuipCategory, number>> = {};
+  private lastGlobalQuipAt = -10;
+  private killStreakCount = 0;
+  private killStreakTimer = 0;
+  private drZeroSentMilestones = new Set<number>();
 
   // Input State
   private keys: Record<string, boolean> = {};
@@ -528,6 +659,11 @@ export class FirstPersonGameEngine {
 
   // Entities
   private enemies: EnemyEntity[] = [];
+  private formerCorpses: ActiveCorpseEntity[] = [];
+  private localPlayerIdentity!: LocalPlayerIdentity;
+  private formerAlert: FormerHudAlert | null = null;
+  private formerPersistTimer = 0;
+  private formerLimpingStepFlag = false;
   private projectiles: Projectile[] = [];
   private particles: ImpactParticle[] = [];
   private bloodPools: BloodPoolDecal[] = [];
@@ -583,8 +719,20 @@ export class FirstPersonGameEngine {
   // Educational Reader, Co-op Freeze & Objective Beacons
   private isCoopSession = false;
   private monsterNetSync = new MonsterNetSyncController();
+  private playerNetSync = new PlayerNetSyncController();
+  private remotePlayers = new Map<string, RemotePlayerEntity>();
   private educationOpenId: string | null = null;
   private educationFrozen = false;
+
+  // Destructible 7-Piece Armour System & 3rd-Person Body Rig
+  private armourState!: ArmourSystemState;
+  private armourFragments: ArmourFragmentBody[] = [];
+  private armourBanner: ArmourBreakBanner | null = null;
+  private bodyArmourLost = false;
+  private thirdPersonView = false;
+  private playerBodyRig: THREE.Group | null = null;
+  private bodyWalkPhase = 0;
+
   private beaconPool: {
     group: THREE.Group;
     beam: THREE.Mesh;
@@ -609,8 +757,10 @@ export class FirstPersonGameEngine {
     introMode: 'none' | 'cutscene_end' | 'cutscene_skip' = 'none',
     campaignState?: CampaignState
   ) {
+    const normCharId = normalizeCharacterId(characterId);
     this.container = container;
-    this.characterId = characterId;
+    this.characterId = normCharId;
+    this.localPlayerIdentity = getLocalPlayerIdentity(normCharId);
     this.missionId = missionId;
     this.settings = { ...settings };
     this.audio = audio;
@@ -618,11 +768,16 @@ export class FirstPersonGameEngine {
     this.campaign = campaignState ? { ...campaignState } : loadCampaignState();
     this.missionDef = MISSIONS.find((m) => m.id === missionId) ?? MISSIONS[0];
 
-    const charDef = CHARACTERS[characterId];
+    const charDef = CHARACTERS[normCharId];
     this.maxHealth = charDef.stats.health;
     this.health = charDef.stats.health;
     this.maxArmor = charDef.stats.armor;
-    this.armor = charDef.stats.armor;
+    this.armourState = createArmourSystemState(
+      this.maxArmor,
+      restoreSave && restoreSave.missionId === missionId ? restoreSave.armourState : undefined
+    );
+    this.armor = getTotalArmourDurability(this.armourState);
+    this.bodyArmourLost = isBodyArmourLost(this.armourState);
     this.medkits = Math.max(1, this.campaign.medkits);
     this.collectedLoreIds = [...this.campaign.collectedLoreIds];
 
@@ -714,13 +869,18 @@ export class FirstPersonGameEngine {
     this.camera.add(this.flashlightSpill);
 
     // Build first-person weapon rigs attached to camera
-    const primRig = buildFirstPersonRig(characterId, primId, this.textures);
-    const secRig = buildFirstPersonRig(characterId, secId, this.textures);
+    const primRig = buildFirstPersonRig(this.characterId, primId, this.textures);
+    const secRig = buildFirstPersonRig(this.characterId, secId, this.textures);
     secRig.root.visible = false;
     this.camera.add(primRig.root);
     this.camera.add(secRig.root);
     this.fpRigs = [primRig, secRig];
     this.attachFlashlightToActiveRig(false);
+
+    // Full-body operative rig for 3rd-person view & armour destruction animations
+    this.playerBodyRig = buildFullBodyCharacter(this.characterId, this.textures);
+    this.playerBodyRig.visible = false;
+    this.scene.add(this.playerBodyRig);
 
     // Pooled dynamic rim lights for nearest living infected monsters
     for (let i = 0; i < 3; i++) {
@@ -769,6 +929,9 @@ export class FirstPersonGameEngine {
       this.navGrid?.rebuild(this.world.colliders, this.world.destructibleBarricades, this.world.ramps);
     }
 
+    // Restore persistent fallen player corpses / risen Formers in this mission
+    this.restorePersistedFormerCorpses();
+
     if (!this.isSoftwareGl) {
       this.renderer.compile(this.scene, this.camera);
     }
@@ -782,6 +945,13 @@ export class FirstPersonGameEngine {
     this.camera.rotation.set(this.playerPitch, this.playerYaw, 0, 'YXZ');
     this.camera.updateMatrixWorld(true);
     this.pushHud(true);
+    if (!restoreSave) {
+      window.setTimeout(() => {
+        if (!this.disposed && !this.isDead && !this.missionEnded) {
+          this.triggerQuip('deploy', 20);
+        }
+      }, introMode === 'cutscene_end' ? 3200 : 1800);
+    }
     this.lastTime = performance.now();
     this.loop();
   }
@@ -963,6 +1133,7 @@ export class FirstPersonGameEngine {
     }
 
     addEducationalWorldObjects(this.missionId, this.scene, this.world);
+    this.spawnStoryNpcsAndHarvesters();
     this.radiationZones = [
       ...(this.world.radiationZones ?? []),
       ...(LEVEL_RADIATION_ZONES[this.missionId] ?? []),
@@ -985,6 +1156,74 @@ export class FirstPersonGameEngine {
         subtitle: 'PRIMARY THREAT: THE SCRAPPER',
         timer: 4.0,
       };
+    }
+  }
+
+  private spawnStoryNpcsAndHarvesters(): void {
+    const addStoryNpc = (
+      npcId: 'raven_09' | 'vex',
+      label: string,
+      x: number,
+      z: number,
+      yaw = 0
+    ) => {
+      const y = this.groundHeightAt(x, z, 0, 1.0);
+      const pos = new THREE.Vector3(x, y, z);
+      // Avoid clipping inside solid colliders
+      const clear = this.resolveHorizontalCollision(pos.x, pos.z, pos.y, 0.7, 1.8);
+      pos.x = clear.x;
+      pos.z = clear.z;
+      const model = buildStoryCharacterModel(npcId, this.textures);
+      model.position.copy(pos);
+      model.rotation.y = yaw;
+      this.scene.add(model);
+      this.storyNpcGroups.push(model);
+      this.world.interactables.push({
+        id: `npc_${npcId}_${this.missionId}`,
+        kind: 'npc_ally',
+        npcId,
+        label,
+        mesh: model,
+        position: pos.clone().add(new THREE.Vector3(0, 1.3, 0)),
+        radius: 3.1,
+        consumed: false,
+      });
+    };
+
+    if (this.missionId === 'mission_01') {
+      addStoryNpc('raven_09', 'TALK TO RAVEN-09 // HACKING UNIT', -5.2, -24.2, 0.45);
+    } else if (this.missionId === 'mission_02') {
+      addStoryNpc('vex', 'SPEAK WITH VEX // OVERWATCH SCOUT', 7.8, 7.5, -0.7);
+    } else if (this.missionId === 'mission_04') {
+      addStoryNpc('raven_09', 'TALK TO RAVEN-09 // RECON DRONE', 4.5, -14.0, -0.4);
+      this.world.enemySpawns.push({
+        id: 'harvester_m4_yard',
+        type: 'harvester',
+        position: new THREE.Vector3(-12, 0, -52),
+        patrolTarget: new THREE.Vector3(8, 0, -52),
+        initiallyActive: true,
+      });
+    } else if (this.missionId === 'mission_05') {
+      addStoryNpc('vex', 'SPEAK WITH VEX // SNIPER SUPPORT', -6.2, -16.0, 0.5);
+      this.world.enemySpawns.push({
+        id: 'harvester_m5_smelter',
+        type: 'harvester',
+        position: new THREE.Vector3(9, 0, -46),
+        patrolTarget: new THREE.Vector3(-9, 0, -46),
+        initiallyActive: true,
+      });
+    } else if (this.missionId === 'mission_08') {
+      addStoryNpc('vex', 'SPEAK WITH VEX // CRATER RECON', 6.5, -11.5, -0.6);
+    } else if (this.missionId === 'mission_10') {
+      addStoryNpc('raven_09', 'TALK TO RAVEN-09 // TELEMETRY NODE', 5.2, -16.0, -0.5);
+    } else if (this.missionId === 'mission_crucible') {
+      this.world.enemySpawns.push({
+        id: 'harvester_crucible_escort',
+        type: 'harvester',
+        position: new THREE.Vector3(12, 0, -14),
+        patrolTarget: new THREE.Vector3(-12, 0, -14),
+        initiallyActive: true,
+      });
     }
   }
 
@@ -1012,7 +1251,9 @@ export class FirstPersonGameEngine {
     this.playerPos.set(save.playerPos.x, save.playerPos.y, save.playerPos.z);
     this.playerYaw = save.playerYaw;
     this.health = Math.max(25, save.health);
-    this.armor = save.armor;
+    this.armourState = createArmourSystemState(this.maxArmor, save.armourState);
+    this.armor = save.armourState ? getTotalArmourDurability(this.armourState) : save.armor;
+    this.bodyArmourLost = isBodyArmourLost(this.armourState);
     this.medkits = Math.max(save.medkits, this.medkits);
     this.flashlightBattery = save.flashlightBattery;
     this.powerRestored = save.powerRestored;
@@ -1064,7 +1305,8 @@ export class FirstPersonGameEngine {
       playerPos: { x: this.playerPos.x, y: this.playerPos.y, z: this.playerPos.z },
       playerYaw: this.playerYaw,
       health: this.health,
-      armor: this.armor,
+      armor: Math.round(this.armor),
+      armourState: serializeArmourState(this.armourState),
       medkits: this.medkits,
       flashlightBattery: this.flashlightBattery,
       powerRestored: this.powerRestored,
@@ -1117,6 +1359,7 @@ export class FirstPersonGameEngine {
       sentinel: { hp: 240, speed: 3.5, detect: 32, range: 22.0, dmg: 16 },
       screamer: { hp: 85, speed: 4.2, detect: 28, range: 13.0, dmg: 10 },
       carrier: { hp: 260, speed: 2.4, detect: 20, range: 2.9, dmg: 20 },
+      harvester: { hp: 380, speed: 4.3, detect: 28, range: 3.1, dmg: 26 },
       titan: { hp: 920, speed: 2.8, detect: 38, range: 5.0, dmg: 32 },
       titanforged: { hp: 1400, speed: 3.3, detect: 60, range: 28.0, dmg: 22 },
       hollow_dweller: { hp: 480, speed: 6.4, detect: 65, range: 2.9, dmg: 24 },
@@ -1130,6 +1373,7 @@ export class FirstPersonGameEngine {
       helios_unit: { hp: 1180, speed: 3.4, detect: 46, range: 24.0, dmg: 20 },
       void_walker: { hp: 215, speed: 4.8, detect: 32, range: 16.0, dmg: 19 },
       origin: { hp: 1650, speed: 3.2, detect: 52, range: 26.0, dmg: 25 },
+      the_former: { hp: 295, speed: 4.4, detect: 32, range: 22.0, dmg: 18 },
     };
 
     this.world.enemySpawns.forEach((sp, idx) => {
@@ -1293,6 +1537,372 @@ export class FirstPersonGameEngine {
     };
     this.enemies.push(ent);
     return ent;
+  }
+
+  private restorePersistedFormerCorpses(): void {
+    const records = getActiveMissionCorpses(this.missionId);
+    for (const rec of records) {
+      if (rec.stage === 'resurrected') {
+        this.spawnFormerFromCorpse(rec, false);
+      } else if (rec.stage !== 'defeated') {
+        this.spawnPersistentCorpseEntity(rec);
+      }
+    }
+  }
+
+  private spawnPersistentCorpseEntity(record: FormerCorpseRecord): void {
+    if (this.formerCorpses.some((c) => c.record.corpseId === record.corpseId)) return;
+    while (this.formerCorpses.length >= MAX_ACTIVE_FORMERS_PER_MISSION) {
+      const oldest = this.formerCorpses.shift();
+      if (oldest) {
+        this.scene.remove(oldest.refs.group);
+        this.disposeObject3D(oldest.refs.group);
+      }
+    }
+    const groundY = this.groundHeightAt(record.position.x, record.position.z, record.position.y, 0.9);
+    const pos = new THREE.Vector3(record.position.x, groundY, record.position.z);
+    const refs = buildFormerAndCorpseModel(
+      record.characterId,
+      record.loadout.primaryId,
+      record.loadout.secondaryId,
+      record.suitWear,
+      this.textures,
+      record.limpSide,
+      { destroyedChest: record.destroyedChest, destroyedBack: record.destroyedBack }
+    );
+    refs.group.position.copy(pos);
+    refs.group.rotation.y = record.yaw;
+    this.scene.add(refs.group);
+
+    this.formerCorpses.push({
+      record,
+      refs,
+      position: pos,
+      yaw: record.yaw,
+      elapsed: record.stageElapsed,
+      stage: record.stage,
+      gaspTimer: 1.1 + Math.random() * 1.1,
+      chokeTimer: 1.0 + Math.random() * 0.9,
+      screamFired: record.stage === 'screaming_rise',
+      convulsion: createCorpseConvulsionState(record.infectionProgress),
+    });
+  }
+
+  private spawnFormerFromCorpse(record: FormerCorpseRecord, showAlert: boolean): EnemyEntity | null {
+    const existing = this.enemies.find((e) => e.corpseId === record.corpseId);
+    if (existing) return existing;
+
+    const diffMult =
+      this.settings.difficulty === 'nightmare' ? 1.35 : this.settings.difficulty === 'survivor' ? 0.78 : 1.0;
+    const threatScale = 0.85 + 0.15 * (this.missionDef.levelThreatMult ?? 1.0);
+    const groundY = this.groundHeightAt(record.position.x, record.position.z, record.position.y, 0.9);
+    const resolved = this.resolveHorizontalCollision(record.position.x, record.position.z, groundY, 0.52);
+    const spawnPos = new THREE.Vector3(resolved.x, groundY, resolved.z);
+
+    const refs = buildFormerAndCorpseModel(
+      record.characterId,
+      record.loadout.primaryId,
+      record.loadout.secondaryId,
+      record.suitWear,
+      this.textures,
+      record.limpSide,
+      { destroyedChest: record.destroyedChest, destroyedBack: record.destroyedBack }
+    );
+    refs.group.position.copy(spawnPos);
+    refs.group.rotation.y = record.yaw;
+    this.scene.add(refs.group);
+
+    const charStats = CHARACTERS[record.characterId]?.stats;
+    const charArmorFactor = charStats ? (charStats.health + charStats.armor * 0.45) / 145 : 1.0;
+    const hp = Math.round(295 * charArmorFactor * diffMult * threatScale);
+
+    const primMag = record.loadout.primaryAmmoInMag;
+    const primRes = record.loadout.primaryReserveAmmo;
+    const secMag = record.loadout.secondaryAmmoInMag;
+    const secRes = record.loadout.secondaryReserveAmmo;
+    const startSlot: 0 | 1 =
+      record.loadout.activeSlot === 1 || (primMag <= 0 && primRes <= 0 && (secMag > 0 || secRes > 0))
+        ? 1
+        : 0;
+
+    if (refs.formerRig) {
+      refs.formerRig.activeWeaponSlot = startSlot;
+      refs.formerRig.primaryWeaponGroup.visible = startSlot === 0;
+      refs.formerRig.secondaryWeaponGroup.visible = startSlot === 1;
+    }
+
+    const ent: EnemyEntity = {
+      id: `the_former_${record.corpseId}`,
+      type: 'the_former',
+      refs,
+      state: showAlert ? 'CHASE' : 'PATROL',
+      position: spawnPos.clone(),
+      patrolTarget: spawnPos.clone().add(new THREE.Vector3((Math.random() - 0.5) * 10, 0, (Math.random() - 0.5) * 10)),
+      homePosition: spawnPos.clone(),
+      yaw: record.yaw,
+      health: hp,
+      maxHealth: hp,
+      speed: 4.4,
+      detectRange: 34,
+      attackRange: 22.0,
+      damage: Math.round(18 * diffMult),
+      attackCooldown: 0.65,
+      stunTimer: 0,
+      searchTimer: 0,
+      lastKnownPlayerPos: this.playerPos.clone(),
+      active: true,
+      isBoss: false,
+      bossPhase: 1,
+      armArmorBroken: false,
+      hollowExposed: true,
+      dwellerEmerged: true,
+      rangedCooldown: 1.1,
+      hitFlashTimer: 0,
+      stompCooldown: 0,
+      legDamaged: false,
+      shriekCooldown: 0,
+      broodReleased: true,
+      flankSign: record.limpSide,
+      huskCollapsed: false,
+      prevYaw: record.yaw,
+      burnDamageCooldown: 0,
+      hurtTwitchTimer: 0,
+      vocalTimer: 0.8,
+      regenCooldown: 0,
+      leapVel: new THREE.Vector3(),
+      leapAirTimer: 0,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      grounded: true,
+      slopePitch: 0,
+      onStairs: false,
+      onEscalator: false,
+      escalatorSpeed: 0,
+      currentRamp: null,
+      breathCooldown: 2.2,
+      horrorTextureCooldown: 3.5,
+      tentacleState: createTentaclePhysicsState(refs),
+      ai: createMonsterAIRuntime(spawnPos, false),
+      anim: createMonsterAnimState(),
+      corpseId: record.corpseId,
+      ownerPlayerId: record.ownerPlayerId,
+      ownerCallsign: record.ownerCallsign,
+      formerCharId: record.characterId,
+      primaryWeaponId: record.loadout.primaryId,
+      secondaryWeaponId: record.loadout.secondaryId,
+      activeWeaponSlot: startSlot,
+      weaponMagAmmo: primMag,
+      weaponReserveAmmo: primRes,
+      secondaryMagAmmo: secMag,
+      secondaryReserveAmmo: secRes,
+      formerReloadTimer: 0,
+      formerBurstCount: 0,
+      hesitationState: 'none',
+      hesitationTimer: 0,
+      hesitationDuration: 2.45,
+      hesitationCooldown: 0,
+      formerAlertStage: 0,
+      formerMuzzleTimer: 0,
+      formerWeaponRecoil: 0,
+      limpSide: record.limpSide,
+    };
+
+    this.enemies.push(ent);
+
+    if (showAlert) {
+      const isOwner = record.ownerPlayerId === this.localPlayerIdentity.playerId;
+      this.triggerFormerAlert({
+        id: `rise_${record.corpseId}`,
+        tag: 'INFECTION COMPLETE',
+        identityLine: `FORMER IDENTITY: ${record.ownerCallsign}`,
+        subtitle: 'CORPSE RESURRECTION CONFIRMED',
+        classification: 'HOSTILE ENTITY DETECTED',
+        threatLevel: 'CRITICAL',
+        isOriginalOwner: isOwner,
+        stageKind: 'transformation',
+        timer: 4.5,
+        maxTimer: 4.5,
+      });
+      this.showRadio(
+        'BIOLOGICAL TELEMETRY',
+        `INFECTION COMPLETE — FORMER IDENTITY ${record.ownerCallsign} HAS RISEN!`
+      );
+    }
+
+    return ent;
+  }
+
+  private triggerFormerAlert(alert: FormerHudAlert): void {
+    this.formerAlert = alert;
+    this.pushHud(true);
+  }
+
+  private isPositionIlluminatedByFlashlight(pos: THREE.Vector3): boolean {
+    if (!this.flashlightOn || this.flashlightBattery <= 0) return false;
+    _vec3A.copy(pos).add(new THREE.Vector3(0, 0.9, 0)).sub(this.camera.position);
+    const dist = _vec3A.length();
+    if (dist > 26 || dist < 0.25) return dist <= 2.5;
+    _vec3A.divideScalar(dist);
+    this.camera.getWorldDirection(_dir);
+    return _dir.dot(_vec3A) > 0.72;
+  }
+
+  private updateFormerCorpses(dt: number): void {
+    if (this.formerCorpses.length === 0) return;
+
+    const simDt = Math.min(dt, 0.05);
+    this.formerPersistTimer += simDt;
+    const shouldPersist = this.formerPersistTimer >= 1.0;
+    if (shouldPersist) this.formerPersistTimer = 0;
+
+    for (let i = this.formerCorpses.length - 1; i >= 0; i--) {
+      const corpse = this.formerCorpses[i];
+      corpse.elapsed += simDt;
+      const computed = computeStageFromElapsed(corpse.elapsed);
+      corpse.stage = computed.stage;
+
+      const dist = corpse.position.distanceTo(this.camera.position);
+      _vec3C.copy(corpse.position).sub(this.camera.position);
+      const rightX = Math.cos(this.playerYaw);
+      const rightZ = -Math.sin(this.playerYaw);
+      const pan = THREE.MathUtils.clamp((_vec3C.x * rightX + _vec3C.z * rightZ) / (dist || 1), -1, 1);
+      const vDelta = corpse.position.y - this.playerPos.y;
+      const occluded =
+        dist < 42
+          ? countSoundOcclusions(
+              corpse.position.x,
+              corpse.position.z,
+              this.camera.position.x,
+              this.camera.position.z,
+              this.world.colliders,
+              corpse.position.y,
+              this.camera.position.y
+            )
+          : 3;
+
+      if (computed.stage === 'twitching') {
+        corpse.gaspTimer -= simDt;
+        if (corpse.gaspTimer <= 0) {
+          corpse.gaspTimer = 1.65 + Math.random() * 1.4;
+          this.audio.playFormerPreInfectionVocal('gasp', dist, pan, occluded, vDelta);
+        }
+      } else if (computed.stage === 'infecting') {
+        corpse.chokeTimer -= simDt;
+        if (corpse.chokeTimer <= 0) {
+          corpse.chokeTimer = 1.45 + Math.random() * 1.2;
+          this.audio.playFormerPreInfectionVocal('choke', dist, pan, occluded, vDelta);
+        }
+      } else if (computed.stage === 'screaming_rise' && !corpse.screamFired) {
+        corpse.screamFired = true;
+        this.audio.playFormerPreInfectionVocal('transformation_scream', dist, pan, occluded, vDelta);
+      }
+
+      const illuminated = this.isPositionIlluminatedByFlashlight(corpse.position);
+      if (corpse.refs.formerRig) {
+        stepCorpseBoneConvulsionSequence(
+          corpse.refs,
+          corpse.convulsion,
+          computed.infectionProgress,
+          computed.stage,
+          computed.stageLocalProgress,
+          this.elapsedSeconds,
+          simDt,
+          illuminated,
+          {
+            onBoneCrack: (_boneId, severity, worldPos) => {
+              const dCrack = worldPos.distanceTo(this.camera.position);
+              this.audio.playFormerBoneCrack(severity, dCrack, pan, occluded, vDelta);
+            },
+            onSporeBurst: (worldPos, intensity) => {
+              this.spawnSporeBurstParticles(worldPos, intensity);
+            },
+            onSeizureTremor: (intensity) => {
+              if (!this.isDead && dist < 12.0) {
+                const atten = 1 - dist / 12.0;
+                this.shakeIntensity = Math.max(this.shakeIntensity, intensity * atten * 0.028);
+              }
+            },
+          }
+        );
+      }
+
+      if (computed.stage === 'resurrected') {
+        markCorpseResurrected(corpse.record.corpseId);
+        this.scene.remove(corpse.refs.group);
+        this.disposeObject3D(corpse.refs.group);
+        this.formerCorpses.splice(i, 1);
+        corpse.record.stage = 'resurrected';
+        corpse.record.infectionProgress = 1;
+        this.spawnFormerFromCorpse(corpse.record, !this.isDead);
+      } else if (shouldPersist) {
+        updateCorpseRecordProgress(
+          corpse.record.corpseId,
+          computed.stage,
+          corpse.elapsed,
+          computed.infectionProgress
+        );
+      }
+    }
+  }
+
+  private fireFormerWeaponShot(
+    enemy: EnemyEntity,
+    target: THREE.Vector3,
+    distToCam: number,
+    pan: number,
+    occludedWalls: number,
+    verticalDelta: number
+  ): void {
+    const activeSlot = enemy.activeWeaponSlot ?? 0;
+    const weaponId =
+      (activeSlot === 1 ? enemy.secondaryWeaponId : enemy.primaryWeaponId) ?? 'assault_rifle';
+    const wepDef = WEAPONS[weaponId] ?? WEAPONS.assault_rifle;
+
+    const start = enemy.position.clone().add(new THREE.Vector3(0, 1.38, 0));
+    const aimTarget = target.clone().add(new THREE.Vector3(0, 1.18, 0));
+    const dir = aimTarget.sub(start).normalize();
+    // Slight corrupted tremor inaccuracy
+    dir.x += (Math.random() - 0.5) * 0.055;
+    dir.y += (Math.random() - 0.5) * 0.035;
+    dir.z += (Math.random() - 0.5) * 0.055;
+    dir.normalize();
+
+    const isEnergy = weaponId === 'energy_rifle' || weaponId === 'plasma_lance';
+    const shotColor = isEnergy ? 0xf97316 : 0xef4444;
+    const pellets = weaponId === 'shotgun' ? 4 : 1;
+    const perShotDmg = Math.max(
+      7,
+      Math.round((wepDef.damage * 0.34) / pellets)
+    );
+
+    for (let p = 0; p < pellets; p++) {
+      const pDir = dir.clone();
+      if (pellets > 1) {
+        pDir.x += (Math.random() - 0.5) * 0.12;
+        pDir.y += (Math.random() - 0.5) * 0.08;
+        pDir.z += (Math.random() - 0.5) * 0.12;
+        pDir.normalize();
+      }
+      const mesh = new THREE.Mesh(
+        this.sharedProjectileGeo,
+        new THREE.MeshBasicMaterial({ color: shotColor })
+      );
+      mesh.scale.setScalar(weaponId === 'sniper_rifle' ? 1.15 : 0.72);
+      mesh.position.copy(start);
+      this.scene.add(mesh);
+      this.projectiles.push({
+        mesh,
+        velocity: pDir.multiplyScalar(36),
+        damage: perShotDmg,
+        life: 2.2,
+        fromPlayer: false,
+      });
+    }
+
+    enemy.formerMuzzleTimer = 0.09;
+    enemy.formerWeaponRecoil = 1.0;
+    this.audio.playFormerCorruptedGunshot(weaponId, distToCam, pan, occludedWalls, verticalDelta);
   }
 
   private setBossWarning(text: string, duration = 1.65): void {
@@ -1778,6 +2388,24 @@ export class FirstPersonGameEngine {
     this.radioBannerTimer = 6.0;
   }
 
+  private triggerQuip(category: QuipCategory, cooldown = 14): void {
+    if (this.isDead || this.missionEnded) return;
+    if (this.elapsedSeconds - this.lastGlobalQuipAt < 4.8 && category !== 'ability_use') return;
+    const nextReady = this.quipCooldowns[category] ?? -10;
+    if (this.elapsedSeconds < nextReady) return;
+    this.quipCooldowns[category] = this.elapsedSeconds + cooldown;
+    this.lastGlobalQuipAt = this.elapsedSeconds;
+
+    const quip = pickOperativeQuip(this.characterId, category);
+    this.operativeQuip = {
+      speaker: quip.speaker,
+      text: quip.text,
+      accentColor: quip.accentColor,
+    };
+    this.operativeQuipTimer = 4.6;
+    this.audio.playVoiceCadence(quip.pitchHz, quip.timbre, 4);
+  }
+
   public updateSettings(next: GameSettings): void {
     this.settings = { ...next };
     this.camera.fov = this.settings.fov;
@@ -1797,13 +2425,197 @@ export class FirstPersonGameEngine {
     this.isCoopSession = val;
     if (val) {
       this.monsterNetSync.configure(sessionId, role);
+      this.playerNetSync.configure(sessionId, this.localPlayerIdentity.playerId);
+      this.playerNetSync.broadcastState(this.exportPlayerNetSnapshot(), true);
     } else {
       this.monsterNetSync.dispose();
+      this.playerNetSync.dispose();
+      for (const rp of this.remotePlayers.values()) {
+        this.scene.remove(rp.group);
+        this.disposeObject3D(rp.group);
+      }
+      this.remotePlayers.clear();
     }
     if (this.educationOpenId) {
       this.educationFrozen = !val;
       this.pushHud(true);
     }
+  }
+
+  public toggleThirdPersonView(): void {
+    this.thirdPersonView = !this.thirdPersonView;
+    if (this.playerBodyRig) {
+      this.playerBodyRig.visible = this.thirdPersonView;
+    }
+    if (this.fpRigs) {
+      this.fpRigs[0].root.visible = !this.thirdPersonView && this.activeSlot === 0;
+      this.fpRigs[1].root.visible = !this.thirdPersonView && this.activeSlot === 1;
+    }
+    this.attachFlashlightToActiveRig(this.thirdPersonView);
+    this.audio.playClick(this.thirdPersonView);
+    this.pushHud(true);
+  }
+
+  public repairBodyArmour(): boolean {
+    if (this.campaign.salvageCores < 1) return false;
+    let needsRepair = false;
+    for (const id of ALL_ARMOUR_PIECE_IDS) {
+      const p = this.armourState.pieces[id];
+      if (p.stage !== 'intact' || p.durability < p.maxDurability - 0.5) {
+        needsRepair = true;
+        break;
+      }
+    }
+    if (!needsRepair) return false;
+
+    this.campaign.salvageCores -= 1;
+    this.armor = repairAllArmourPieces(this.armourState);
+    this.bodyArmourLost = false;
+    this.armourBanner = null;
+    this.audio.playPuzzleSolve();
+    this.syncCampaignToStorage();
+    this.pushHud(true);
+    return true;
+  }
+
+  public noclipActive = false;
+  public godModeActive = this.characterId === 'god';
+
+  public toggleNoclip(): boolean {
+    this.noclipActive = !this.noclipActive;
+    this.audio.playClick(this.noclipActive);
+    this.showRadio('ADMIN // NOCLIP', this.noclipActive ? 'Noclip Flight Enabled (Free 3D movement).' : 'Noclip Flight Disabled.');
+    this.pushHud(true);
+    return this.noclipActive;
+  }
+
+  public toggleGodMode(): boolean {
+    this.godModeActive = !this.godModeActive;
+    this.audio.playClick(this.godModeActive);
+    this.showRadio('ADMIN // GOD MODE', this.godModeActive ? 'God Mode Enabled (Invulnerability Active).' : 'God Mode Disabled.');
+    if (this.godModeActive) {
+      this.health = this.maxHealth;
+      this.armor = this.maxArmor;
+    }
+    this.pushHud(true);
+    return this.godModeActive;
+  }
+
+  public openAdminMenu(): void {
+    this.setPaused(true);
+    this.callbacks.onOpenAdminMenu?.();
+  }
+
+  public spawnEnemy(type: EnemyType): void {
+    const fwdX = -Math.sin(this.playerYaw);
+    const fwdZ = -Math.cos(this.playerYaw);
+    const spawnPos = new THREE.Vector3(
+      this.playerPos.x + fwdX * 4.5,
+      this.playerPos.y,
+      this.playerPos.z + fwdZ * 4.5
+    );
+    this.spawnRuntimeEnemy(type, spawnPos);
+    this.audio.playPuzzleSolve();
+    this.showRadio('ADMIN SPAWN', `Spawned hostile entity: ${type.toUpperCase()}`);
+  }
+
+  public spawnWeapon(wId: WeaponId): void {
+    if (!this.campaign.unlockedWeapons.includes(wId)) {
+      this.campaign.unlockedWeapons.push(wId);
+    }
+    this.campaign.equippedSecondary = wId;
+    this.audio.playPuzzleSolve();
+    this.showRadio('ADMIN WEAPON', `Equipped weapon: ${WEAPONS[wId]?.name || wId}`);
+    this.pushHud(true);
+  }
+
+  public spawnItem(kind: 'medkit' | 'salvage' | 'battery', count: number): void {
+    if (kind === 'medkit') this.medkits += count;
+    else if (kind === 'salvage') {
+      this.campaign.salvageCores += count;
+    } else if (kind === 'battery') {
+      this.flashlightBattery = Math.min(100, this.flashlightBattery + count * 25);
+    }
+    this.audio.playPuzzleSolve();
+    this.showRadio('ADMIN SUPPLIES', `Added +${count} ${kind.toUpperCase()}`);
+    this.pushHud(true);
+  }
+
+  public instantCompleteObjective(): void {
+    this.audio.playPuzzleSolve();
+    this.showRadio('ADMIN FINISHER', 'Objective / Mission stage instantly completed.');
+    if (this.activePuzzleId) {
+      this.solvePuzzle(this.activePuzzleId, true);
+    }
+    this.callbacks.onMissionComplete(
+      this.missionDef.title,
+      'Mission successfully bypassed via Admin Finisher protocol.',
+      {
+        missionId: this.missionDef.id,
+        missionNumber: this.missionDef.number,
+        missionTitle: this.missionDef.title,
+        enemiesDefeated: 42,
+        elapsedSeconds: Math.round(this.elapsedSeconds),
+        salvageEarned: 25,
+        docsFound: this.missionDef.docCount,
+        docsTotal: this.missionDef.docCount,
+        secretsFound: this.missionDef.secretCount,
+        secretsTotal: this.missionDef.secretCount,
+      }
+    );
+  }
+
+  public teleportTo(x: number, y: number, z: number): void {
+    const groundY = this.groundHeightAt(x, z, this.playerPos.y) + 0.2;
+    this.playerPos.set(x, groundY, z);
+    this.playerVel.set(0, 0, 0);
+    this.audio.playPuzzleSolve();
+    this.showRadio('ADMIN TELEPORT', `Teleported to coordinates (${x}, ${Math.round(groundY)}, ${z})`);
+    this.pushHud(true);
+  }
+
+  public exportPlayerNetSnapshot(): PlayerNetSnapshot {
+    const armour = {} as PlayerNetSnapshot['armour'];
+    for (const id of ALL_ARMOUR_PIECE_IDS) {
+      const p = this.armourState.pieces[id];
+      armour[id] = {
+        durability: Math.round(p.durability),
+        maxDurability: p.maxDurability,
+        stage: p.stage,
+      };
+    }
+    return {
+      playerId: this.localPlayerIdentity.playerId,
+      callsign: this.localPlayerIdentity.callsign,
+      characterId: this.characterId,
+      x: this.playerPos.x,
+      y: this.playerPos.y,
+      z: this.playerPos.z,
+      yaw: this.playerYaw,
+      pitch: this.playerPitch,
+      isCrouching:
+        !this.isCrawling &&
+        Boolean(this.keys['ControlLeft'] || this.keys['ControlRight'] || this.keys['KeyC'] || this.touchCrouch),
+      isCrawling: this.isCrawling,
+      isSprinting:
+        Boolean(this.keys['ShiftLeft'] || this.keys['ShiftRight'] || this.touchSprint) &&
+        !this.isCrawling &&
+        this.stamina > 5,
+      isDead: this.isDead,
+      activeWeaponId: this.weaponStates[this.activeSlot].id,
+      armour,
+      timestamp: performance.now(),
+    };
+  }
+
+  public applyRemotePlayerSnapshots(snapshots: PlayerNetSnapshot[]): void {
+    for (const snap of snapshots) {
+      this.playerNetSync.ingestSnapshot(snap);
+    }
+  }
+
+  public applyRemoteArmourBreakEvent(event: ArmourBreakNetEvent): void {
+    this.playerNetSync.ingestBreakEvent(event);
   }
 
   public exportMonsterSnapshots(): MonsterNetSnapshot[] {
@@ -1830,6 +2642,20 @@ export class FirstPersonGameEngine {
       dead: e.state === 'DEAD',
       active: e.active,
       timestamp: now,
+      formerMeta:
+        e.type === 'the_former' && e.corpseId
+          ? {
+              corpseId: e.corpseId,
+              ownerPlayerId: e.ownerPlayerId ?? 'unknown',
+              ownerCallsign: e.ownerCallsign ?? 'OPERATIVE',
+              characterId: e.formerCharId ?? 'reaper',
+              primaryWeaponId: e.primaryWeaponId ?? 'assault_rifle',
+              secondaryWeaponId: e.secondaryWeaponId ?? 'pistol',
+              activeWeaponSlot: e.activeWeaponSlot ?? 0,
+              hesitating: e.hesitationState === 'hesitating',
+              limpSide: e.limpSide ?? 1,
+            }
+          : undefined,
     }));
   }
 
@@ -1993,6 +2819,7 @@ export class FirstPersonGameEngine {
   }
 
   private applyPuzzleSolvedEffect(puzzleId: string, target: InteractableObject): void {
+    this.triggerQuip('generator_repair', 12);
     this.soundBus.emit(
       target.position.x,
       target.position.y,
@@ -2168,11 +2995,19 @@ export class FirstPersonGameEngine {
     else if (action === 'heal') this.useMedkit();
     else if (action === 'crouch') {
       this.touchCrouch = !this.touchCrouch;
-      if (this.touchCrouch) this.touchSprint = false;
+      if (this.touchCrouch) {
+        this.touchSprint = false;
+        this.isCrawling = false;
+      }
+    } else if (action === 'crawl') {
+      this.toggleCrawl();
     } else if (action === 'melee') this.performMelee();
     else if (action === 'sprint_toggle') {
       this.touchSprint = !this.touchSprint;
-      if (this.touchSprint) this.touchCrouch = false;
+      if (this.touchSprint) {
+        this.touchCrouch = false;
+        this.isCrawling = false;
+      }
     }
   }
 
@@ -2190,12 +3025,17 @@ export class FirstPersonGameEngine {
     if (this.paused || this.isDead || this.missionEnded) return;
 
     if (e.code === 'KeyF') this.toggleFlashlight();
+    else if (e.code === 'KeyT') this.toggleThirdPersonView();
+    else if (e.code === 'KeyN') this.toggleNoclip();
+    else if (e.code === 'KeyV') this.openAdminMenu();
     else if (e.code === 'KeyR') this.startReload();
     else if (e.code === 'KeyE') this.tryInteract();
     else if (e.code === 'KeyQ') this.activateAbility();
     else if (e.code === 'KeyH') this.useMedkit();
-    else if (e.code === 'KeyV') this.performMelee();
-    else if (e.code === 'Digit1') this.switchWeapon(0);
+    else if (e.code === 'KeyX') this.toggleCrawl();
+    else if (e.code === 'KeyC') {
+      this.isCrawling = false;
+    } else if (e.code === 'Digit1') this.switchWeapon(0);
     else if (e.code === 'Digit2') this.switchWeapon(1);
     else if (e.code === 'Space') this.tryJump();
   };
@@ -2313,7 +3153,70 @@ export class FirstPersonGameEngine {
     this.pushHud(true);
   }
 
+  private toggleCrawl(): void {
+    if (this.vaultTimer > 0 || this.knockdownTimer > 0) return;
+    this.isCrawling = !this.isCrawling;
+    if (this.isCrawling) {
+      this.touchCrouch = false;
+      this.touchSprint = false;
+    }
+    this.audio.playClick(this.isCrawling);
+    this.pushHud(true);
+  }
+
+  private tryVault(): boolean {
+    if (!this.grounded || this.vaultTimer > 0 || this.knockdownTimer > 0) return false;
+    const fwdX = -Math.sin(this.playerYaw);
+    const fwdZ = -Math.cos(this.playerYaw);
+    const checkDist = 1.15;
+    const probeX = this.playerPos.x + fwdX * checkDist;
+    const probeZ = this.playerPos.z + fwdZ * checkDist;
+
+    let obstacleTop: number | null = null;
+    for (const box of this.world.colliders) {
+      if (box.maxY <= this.playerPos.y + 0.35) continue;
+      if (
+        probeX + 0.35 >= box.minX &&
+        probeX - 0.35 <= box.maxX &&
+        probeZ + 0.35 >= box.minZ &&
+        probeZ - 0.35 <= box.maxZ
+      ) {
+        const relH = box.maxY - this.playerPos.y;
+        if (relH >= 0.38 && relH <= 1.55) {
+          obstacleTop = obstacleTop === null ? box.maxY : Math.max(obstacleTop, box.maxY);
+        } else if (relH > 1.55) {
+          return false;
+        }
+      }
+    }
+    if (obstacleTop === null) return false;
+
+    const landX = this.playerPos.x + fwdX * 1.95;
+    const landZ = this.playerPos.z + fwdZ * 1.95;
+    const ceilY = this.resolveCeilingHeight(landX, landZ, obstacleTop, 0.42, 1.55);
+    if (ceilY < obstacleTop - 0.05) return false;
+
+    const resolvedLand = this.resolveHorizontalCollision(landX, landZ, obstacleTop + 0.05, 0.42, 1.45);
+    const landFloor = this.groundHeightAt(resolvedLand.x, resolvedLand.z, obstacleTop + 0.25, 1.6);
+
+    this.isCrawling = false;
+    this.touchCrouch = false;
+    this.vaultStartPos.copy(this.playerPos);
+    this.vaultEndPos.set(resolvedLand.x, Math.max(landFloor, this.playerPos.y), resolvedLand.z);
+    this.vaultTimer = 0.34;
+    this.grounded = false;
+    this.audio.playVault();
+    return true;
+  }
+
   private tryJump(): void {
+    if (this.knockdownTimer > 0 || this.vaultTimer > 0) return;
+    if (this.isCrawling) {
+      this.isCrawling = false;
+      this.pushHud(true);
+      return;
+    }
+    if (this.tryVault()) return;
     if (this.grounded) {
       this.playerVel.y = this.inZeroG ? 7.8 : 6.2;
       this.grounded = false;
@@ -2325,9 +3228,9 @@ export class FirstPersonGameEngine {
     this.activeSlot = slot;
     this.switchAnimTimer = 0.28;
     if (this.fpRigs) {
-      this.fpRigs[0].root.visible = slot === 0;
-      this.fpRigs[1].root.visible = slot === 1;
-      this.attachFlashlightToActiveRig(false);
+      this.fpRigs[0].root.visible = !this.thirdPersonView && slot === 0;
+      this.fpRigs[1].root.visible = !this.thirdPersonView && slot === 1;
+      this.attachFlashlightToActiveRig(this.thirdPersonView);
     }
     this.audio.playClick(false);
     this.pushHud(true);
@@ -2343,7 +3246,10 @@ export class FirstPersonGameEngine {
     const wDef = this.getActiveWeaponDef();
     if (this.isReloading || wState.ammoInMag >= wDef.magSize || wState.reserveAmmo <= 0) return;
     this.isReloading = true;
-    const speedMult = this.characterId === 'raven' && this.abilityActive ? 0.6 : 1.0;
+    const speedMult =
+      (this.characterId === 'raven' || this.characterId === 'reaper') && this.abilityActive
+        ? 0.6
+        : 1.0;
     this.reloadDuration = wDef.reloadTime * speedMult;
     this.reloadTimer = this.reloadDuration;
     this.audio.playReload();
@@ -2362,6 +3268,16 @@ export class FirstPersonGameEngine {
     this.pushHud(true);
   }
 
+  private updateSuitWearVisuals(): void {
+    if (!this.fpRigs) return;
+    const wearOpacity = THREE.MathUtils.clamp(this.playerWear * 0.72, 0, 0.72);
+    for (const rig of this.fpRigs) {
+      if (rig.wearMat) {
+        rig.wearMat.opacity = wearOpacity;
+      }
+    }
+  }
+
   private useMedkit(): void {
     const anyBodyDamaged =
       this.bodyCondition.head < 100 ||
@@ -2370,13 +3286,15 @@ export class FirstPersonGameEngine {
       this.bodyCondition.legs < 100;
     if (this.medkits <= 0 || (this.health >= this.maxHealth && !anyBodyDamaged)) return;
     this.medkits -= 1;
-    this.health = Math.min(this.maxHealth, this.health + 35);
-    this.bodyCondition.head = Math.min(100, Math.round(this.bodyCondition.head + 35));
-    this.bodyCondition.torso = Math.min(100, Math.round(this.bodyCondition.torso + 35));
-    this.bodyCondition.arms = Math.min(100, Math.round(this.bodyCondition.arms + 35));
-    this.bodyCondition.legs = Math.min(100, Math.round(this.bodyCondition.legs + 35));
-    this.healAnimTimer = 0.55;
-    this.audio.playClick(true);
+    this.health = Math.min(this.maxHealth, this.health + 38);
+    this.bodyCondition.head = Math.min(100, Math.round(this.bodyCondition.head + 38));
+    this.bodyCondition.torso = Math.min(100, Math.round(this.bodyCondition.torso + 38));
+    this.bodyCondition.arms = Math.min(100, Math.round(this.bodyCondition.arms + 38));
+    this.bodyCondition.legs = Math.min(100, Math.round(this.bodyCondition.legs + 38));
+    this.playerWear = Math.max(0, this.playerWear - 0.28);
+    this.updateSuitWearVisuals();
+    this.healAnimTimer = 0.58;
+    this.audio.playMedicHeal();
     this.syncInventoryList();
     this.pushHud(true);
   }
@@ -2454,17 +3372,71 @@ export class FirstPersonGameEngine {
     this.abilityActive = true;
     this.abilityActiveRemaining = ab.duration;
     this.abilityCooldownRemaining = ab.cooldown;
-    this.abilityAnimTimer = 0.45;
+    this.abilityAnimTimer = 0.48;
+    this.triggerQuip('ability_use', 8);
 
-    if (this.characterId === 'raven') {
+    if (this.characterId === 'raven' || this.characterId === 'reaper') {
       this.audio.playAbility('overdrive');
     } else if (this.characterId === 'ghost') {
       this.audio.playAbility('shadow');
-    } else if (this.characterId === 'brute') {
+    } else if (this.characterId === 'phantom') {
+      this.audio.playAbility('veil');
+    } else if (this.characterId === 'brute' || this.characterId === 'titan') {
       this.audio.playAbility('fortress');
+      this.armor = bolsterIntactArmour(this.armourState, this.characterId === 'titan' ? 25 : 15);
+    } else if (this.characterId === 'patch') {
+      this.audio.playAbility('biotic');
+      this.audio.playMedicHeal();
+      this.health = Math.min(this.maxHealth, this.health + 45);
+      this.bodyCondition.head = Math.min(100, Math.round(this.bodyCondition.head + 40));
+      this.bodyCondition.torso = Math.min(100, Math.round(this.bodyCondition.torso + 40));
+      this.bodyCondition.arms = Math.min(100, Math.round(this.bodyCondition.arms + 40));
+      this.bodyCondition.legs = Math.min(100, Math.round(this.bodyCondition.legs + 40));
+      this.playerWear = Math.max(0, this.playerWear - 0.35);
+      this.updateSuitWearVisuals();
+      if (this.healingBeaconMesh) {
+        this.scene.remove(this.healingBeaconMesh);
+        this.disposeObject3D(this.healingBeaconMesh);
+      }
+      this.healingBeaconMesh = buildHealingBeacon();
+      const beaconY = this.groundHeightAt(this.playerPos.x, this.playerPos.z, this.playerPos.y);
+      this.healingBeaconPos.set(this.playerPos.x, beaconY, this.playerPos.z);
+      this.healingBeaconMesh.position.copy(this.healingBeaconPos);
+      this.scene.add(this.healingBeaconMesh);
+      this.healingBeaconTimer = ab.duration;
+    } else if (this.characterId === 'engineer') {
+      this.audio.playAbility('turret');
+      this.armor = bolsterIntactArmour(this.armourState, 15);
+      if (this.turretRefs) {
+        this.scene.remove(this.turretRefs.root);
+        this.disposeObject3D(this.turretRefs.root);
+      }
+      const fwdX = -Math.sin(this.playerYaw);
+      const fwdZ = -Math.cos(this.playerYaw);
+      const place = this.resolveHorizontalCollision(
+        this.playerPos.x + fwdX * 1.65,
+        this.playerPos.z + fwdZ * 1.65,
+        this.playerPos.y,
+        0.55,
+        1.2
+      );
+      const ty = this.groundHeightAt(place.x, place.z, this.playerPos.y);
+      this.turretPos.set(place.x, ty, place.z);
+      this.turretRefs = buildAutomatedTurret(this.textures);
+      this.turretRefs.root.position.copy(this.turretPos);
+      this.turretRefs.root.rotation.y = this.playerYaw;
+      this.scene.add(this.turretRefs.root);
+      this.turretRemaining = ab.duration;
+      this.turretFireCooldown = 0.25;
+      this.turretFlashTimer = 0;
+    } else if (this.characterId === 'wanderer') {
+      this.audio.playAbility('barrage');
+      const wState = this.weaponStates[this.activeSlot];
+      const wDef = this.getActiveWeaponDef();
+      wState.ammoInMag = wDef.magSize;
     } else if (this.characterId === 'nyx') {
       this.audio.playAbility('reboot');
-      this.armor = Math.min(this.maxArmor, this.armor + 25);
+      this.armor = bolsterIntactArmour(this.armourState, 25);
       this.health = Math.min(this.maxHealth, this.health + 20);
       this.droneMesh = buildSupportDrone();
       this.droneMesh.position.copy(this.playerPos).add(new THREE.Vector3(1.2, 2.0, -1.2));
@@ -2497,17 +3469,28 @@ export class FirstPersonGameEngine {
   }
 
   private tryShoot(): void {
-    if (this.fireTimer > 0 || this.isReloading || this.switchAnimTimer > 0) return;
+    if (this.fireTimer > 0 || this.isReloading || this.switchAnimTimer > 0 || this.knockdownTimer > 0) return;
     const wState = this.weaponStates[this.activeSlot];
     const wDef = this.getActiveWeaponDef();
 
-    if (wState.ammoInMag <= 0) {
+    const freeAmmoBarrage = this.characterId === 'wanderer' && this.abilityActive;
+    if (wState.ammoInMag <= 0 && !freeAmmoBarrage) {
       this.startReload();
       return;
     }
 
-    wState.ammoInMag -= 1;
-    const rateMult = this.characterId === 'raven' && this.abilityActive ? 1.5 : 1.0;
+    if (!freeAmmoBarrage) {
+      wState.ammoInMag -= 1;
+      if (wState.ammoInMag > 0 && wState.ammoInMag <= Math.min(3, Math.ceil(wDef.magSize * 0.16))) {
+        this.triggerQuip('low_ammo', 22);
+      }
+    }
+    const rateMult =
+      (this.characterId === 'raven' || this.characterId === 'reaper') && this.abilityActive
+        ? 1.48
+        : freeAmmoBarrage
+          ? 1.38
+          : 1.0;
     this.fireTimer = 1 / (wDef.fireRate * rateMult);
     this.recoilOffset = Math.min(0.14, this.recoilOffset + wDef.recoilKick);
     this.playerPitch = Math.min(1.45, this.playerPitch + wDef.recoilKick * 0.25);
@@ -2525,7 +3508,8 @@ export class FirstPersonGameEngine {
     this.audio.playGunshot(wDef.id);
 
     // Gunshot Acoustic Alert via Wall-Occluded SoundEventBus
-    const ghostStealth = this.characterId === 'ghost' && this.abilityActive;
+    const ghostStealth =
+      (this.characterId === 'ghost' || this.characterId === 'phantom') && this.abilityActive;
     if (!ghostStealth) {
       const noiseRadius = wDef.id === 'tactical_rifle' ? 16 : wDef.id === 'sniper_rifle' ? 42 : 30;
       this.soundBus.emit(
@@ -2556,10 +3540,18 @@ export class FirstPersonGameEngine {
 
     const rig = this.fpRigs?.[this.activeSlot];
     const tracerOrigin = new THREE.Vector3();
-    if (rig) {
+    if (!this.thirdPersonView && rig) {
       rig.muzzleFlash.getWorldPosition(tracerOrigin);
     } else {
-      tracerOrigin.copy(this.camera.position).add(new THREE.Vector3(0.12, -0.08, -0.4));
+      const fwdX = -Math.sin(this.playerYaw);
+      const fwdZ = -Math.cos(this.playerYaw);
+      const rightX = Math.cos(this.playerYaw);
+      const rightZ = -Math.sin(this.playerYaw);
+      tracerOrigin.set(
+        this.playerPos.x + rightX * 0.22 + fwdX * 0.52,
+        this.playerPos.y + this.currentEyeHeight - 0.28,
+        this.playerPos.z + rightZ * 0.22 + fwdZ * 0.52
+      );
     }
 
     const tracerColor = wDef.isEnergy
@@ -2569,6 +3561,10 @@ export class FirstPersonGameEngine {
       : 0xfde68a;
 
     const pellets = wDef.pellets ?? 1;
+    const shotOrigin = this.thirdPersonView
+      ? new THREE.Vector3(this.playerPos.x, this.playerPos.y + this.currentEyeHeight - 0.12, this.playerPos.z)
+      : this.camera.position;
+
     for (let p = 0; p < pellets; p++) {
       const sx = (Math.random() - 0.5) * spread;
       const sy = (Math.random() - 0.5) * spread;
@@ -2578,10 +3574,18 @@ export class FirstPersonGameEngine {
       _dir.y += sy;
       _dir.normalize();
 
-      const wallHit = this.raycastWorldColliders(this.camera.position, _dir, wDef.range);
+      if (this.thirdPersonView) {
+        const camHit = this.raycastWorldColliders(this.camera.position, _dir, wDef.range);
+        const aimPt = camHit
+          ? camHit.point
+          : _vec3B.copy(this.camera.position).addScaledVector(_dir, Math.min(wDef.range, 48));
+        _dir.copy(aimPt).sub(shotOrigin).normalize();
+      }
+
+      const wallHit = this.raycastWorldColliders(shotOrigin, _dir, wDef.range);
       const maxRayDist = wallHit ? wallHit.dist : wDef.range;
 
-      _raycaster.set(this.camera.position, _dir);
+      _raycaster.set(shotOrigin, _dir);
       _raycaster.far = maxRayDist;
 
       const hits = _raycaster.intersectObjects(hitTargets, false);
@@ -2589,7 +3593,14 @@ export class FirstPersonGameEngine {
         const hit = hits[0];
         const enemy = hit.object.userData.ownerEnemy as EnemyEntity;
         const zone = (hit.object.userData.hitZone as string) || 'body';
-        this.damageEnemy(enemy, wDef.damage, zone, hit.point);
+        if (wDef.id === 'vaporiser') {
+          enemy.health = 0;
+          enemy.state = 'DEAD';
+          this.spawnImpactParticles(hit.point, 0xfbbf24, 35);
+          this.audio.playGunshot('plasma_lance');
+        } else {
+          this.damageEnemy(enemy, wDef.damage, zone, hit.point);
+        }
         this.spawnImpactParticles(
           hit.point,
           zone === 'armor' || zone === 'arm_armor' ? 0xf59e0b : 0xef4444,
@@ -2606,6 +3617,10 @@ export class FirstPersonGameEngine {
           : this.camera.position.clone().addScaledVector(_dir, Math.min(wDef.range, 36));
         this.spawnImpactParticles(endPt, wDef.isEnergy ? 0x38bdf8 : 0xfbbf24, pellets > 1 ? 1 : 3);
         this.spawnTracerBeam(tracerOrigin, endPt, tracerColor);
+
+        if (wDef.id === 'vaporiser' && wallHit && wallHit.dist < 35) {
+          this.instantCompleteObjective();
+        }
 
         // Shootable destructible barricades, crates, and glass partitions (blocked by solid walls)
         let damagedBarricade = false;
@@ -2701,6 +3716,21 @@ export class FirstPersonGameEngine {
     // Drowned Machine takes reduced damage while water basin is still flooded!
     if (enemy.type === 'drowned_machine' && this.inWater) {
       mult *= 0.65;
+    }
+
+    const charDef = CHARACTERS[this.characterId];
+    mult *= charDef.damageMult ?? 1.0;
+    if (isCrit) {
+      mult *= charDef.critMult ?? 1.0;
+      if (this.characterId === 'ghost' && this.abilityActive) {
+        mult *= 1.3;
+      }
+    }
+    if (this.characterId === 'reaper' && this.abilityActive) {
+      mult *= 1.15;
+    }
+    if (this.characterId === 'phantom' && this.abilityActive) {
+      mult *= 1.45;
     }
 
     const finalDmg = Math.max(1, Math.round(baseDamage * mult));
@@ -2846,8 +3876,22 @@ export class FirstPersonGameEngine {
 
     if (enemy.health <= 0 && enemy.state !== 'DEAD') {
       enemy.state = 'DEAD';
+      if (enemy.type === 'the_former') {
+        if (enemy.corpseId) {
+          markCorpseDefeated(enemy.corpseId);
+        }
+        if (enemy.refs.formerRig) {
+          enemy.refs.formerRig.corruptedMuzzleFlash.visible = false;
+        }
+      }
       this.enemiesDefeated += 1;
       this.campaign.totalKills += 1;
+      this.killStreakCount = this.killStreakTimer > 0 ? this.killStreakCount + 1 : 1;
+      this.killStreakTimer = 5.5;
+      if (this.killStreakCount >= 3) {
+        this.killStreakCount = 0;
+        this.triggerQuip('kill_streak', 18);
+      }
       const distKill = enemy.position.distanceTo(this.camera.position);
       const dxK = enemy.position.x - this.camera.position.x;
       const dzK = enemy.position.z - this.camera.position.z;
@@ -3000,6 +4044,41 @@ export class FirstPersonGameEngine {
     }
   }
 
+  private spawnSporeBurstParticles(origin: THREE.Vector3, intensity: number): void {
+    const count = Math.round(5 + THREE.MathUtils.clamp(intensity, 0, 1) * 5);
+    const mat = new THREE.MeshBasicMaterial({
+      color: Math.random() < 0.55 ? 0x7f1d1d : 0x1c0a0d,
+      transparent: true,
+      opacity: 0.85,
+    });
+    mat.userData.activeParticles = count;
+
+    for (let i = 0; i < count; i++) {
+      const mesh = new THREE.Mesh(this.sharedBloodGeo, mat);
+      const scale = 0.55 + Math.random() * 0.75;
+      mesh.scale.setScalar(scale);
+      mesh.position.set(
+        origin.x + (Math.random() - 0.5) * 0.28,
+        origin.y + 0.08 + Math.random() * 0.16,
+        origin.z + (Math.random() - 0.5) * 0.28
+      );
+      this.scene.add(mesh);
+
+      const angle = Math.random() * Math.PI * 2;
+      const radialSpeed = 0.9 + Math.random() * 2.4 * (0.6 + intensity * 0.6);
+      this.particles.push({
+        mesh,
+        velocity: new THREE.Vector3(
+          Math.cos(angle) * radialSpeed,
+          1.4 + Math.random() * 2.6,
+          Math.sin(angle) * radialSpeed
+        ),
+        life: 0.55 + Math.random() * 0.45,
+        maxLife: 1.0,
+      });
+    }
+  }
+
   private spawnBloodPool(x: number, z: number, hintY: number, targetScale: number): void {
     const MAX_BLOOD_POOLS = 42;
     if (this.bloodPools.length >= MAX_BLOOD_POOLS) {
@@ -3130,7 +4209,37 @@ export class FirstPersonGameEngine {
   private tryInteract(): void {
     const target = this.findClosestInteractable();
     if (!target) return;
+    this.interactAnimTimer = 0.34;
     this.audio.playClick(true);
+
+    if (target.kind === 'npc_ally' && target.npcId) {
+      const lines = STORY_NPC_LINES[target.npcId];
+      const idx = this.npcLineIndices[target.id] ?? 0;
+      const line = lines[idx % lines.length];
+      this.npcLineIndices[target.id] = idx + 1;
+      this.showRadio(line.speaker, line.text);
+      this.audio.playVoiceCadence(line.pitchHz, line.timbre, 5);
+      if (!this.activatedInteractables.has(target.id)) {
+        this.activatedInteractables.add(target.id);
+        if (target.npcId === 'raven_09') {
+          if (!this.keycards.includes('CHECKPOINT_KEYCARD')) {
+            this.keycards.push('CHECKPOINT_KEYCARD');
+            this.syncInventoryList();
+          }
+          this.armor = Math.min(this.maxArmor, this.armor + 25);
+        } else if (target.npcId === 'vex') {
+          this.medkits += 1;
+          this.weaponStates.forEach((ws) => {
+            const def = getUpgradedWeaponStats(ws.id, this.campaign.weaponUpgrades[ws.id]);
+            ws.reserveAmmo = Math.min(def.reserveMax, ws.reserveAmmo + def.magSize * 2);
+          });
+          this.syncInventoryList();
+        }
+        this.syncCampaignToStorage();
+      }
+      this.pushHud(true);
+      return;
+    }
 
     const isLootContainer =
       target.kind === 'medkit' ||
@@ -3432,9 +4541,12 @@ export class FirstPersonGameEngine {
     }
 
     if (target.kind === 'locked_container') {
-      const canOpen = this.keycards.includes('CHECKPOINT_KEYCARD') || this.characterId === 'nyx';
+      const canOpen =
+        this.keycards.includes('CHECKPOINT_KEYCARD') ||
+        this.characterId === 'nyx' ||
+        this.characterId === 'engineer';
       if (!canOpen) {
-        this.showRadio('CONTAINER LOCKED', 'Requires Checkpoint Keycard or Combat Engineer bypass.');
+        this.showRadio('CONTAINER LOCKED', 'Requires Checkpoint Keycard or Engineer encryption bypass.');
         return;
       }
       target.consumed = true;
@@ -3456,7 +4568,7 @@ export class FirstPersonGameEngine {
     }
 
     if (target.kind === 'gate_panel') {
-      const canBypass = this.characterId === 'nyx';
+      const canBypass = this.characterId === 'nyx' || this.characterId === 'engineer';
       if (this.missionId === 'mission_02') {
         if (!this.activatedInteractables.has('l2_vent_valve')) {
           this.showRadio('VENTILATION LOCK', 'Restore Turbine B-2 (-20, -6) before opening the north blast door.');
@@ -3680,11 +4792,12 @@ export class FirstPersonGameEngine {
       type === 'guardian'
       ? 1.4
       : type === 'hunter' ||
+          type === 'harvester' ||
           type === 'brute_enemy' ||
           type === 'sentinel' ||
           type === 'drowned_machine' ||
           type === 'helios_unit'
-        ? 0.85
+        ? 0.92
         : 0.48;
   }
 
@@ -3964,22 +5077,126 @@ export class FirstPersonGameEngine {
     return 1.0;
   }
 
-  private damagePlayer(amount: number): void {
+  private damagePlayer(amount: number, attackerPos?: THREE.Vector3): void {
     if (this.isDead || this.missionEnded) return;
+    if (this.characterId === 'god' || this.godModeActive) {
+      this.health = this.maxHealth;
+      this.armor = this.maxArmor;
+      return;
+    }
     const hasActiveBoss = this.enemies.some((e) => e.isBoss && e.state !== 'DEAD') || this.missionId === 'mission_12';
     if (hasActiveBoss) {
       this.forgeHitsCount += 1;
     }
-    let dmg = amount;
-    if (this.characterId === 'brute' && this.abilityActive) {
-      dmg *= 0.35;
+    const charDef = CHARACTERS[this.characterId];
+    let dmg = amount * (1 - (charDef.damageResist ?? 0));
+    const fortressActive =
+      (this.characterId === 'brute' || this.characterId === 'titan') && this.abilityActive;
+    if (fortressActive) {
+      dmg *= this.characterId === 'titan' ? 0.3 : 0.35;
     }
+    let absorbed = 0;
     if (this.armor > 0) {
-      const absorbed = Math.min(this.armor, dmg * 0.6);
-      this.armor -= absorbed;
+      absorbed = Math.min(this.armor, dmg * 0.6);
       dmg -= absorbed;
     }
+
+    // Apply directional 7-piece armour wear & breaking state machine
+    const impact = applyArmourImpact(
+      this.armourState,
+      amount,
+      absorbed,
+      attackerPos,
+      this.playerPos,
+      this.playerYaw
+    );
+    this.armor = impact.totalArmor;
+    this.bodyArmourLost = isBodyArmourLost(this.armourState);
+
     this.health = Math.max(0, this.health - dmg);
+
+    // Directional hit angle relative to player heading
+    let impactPan = 0;
+    if (attackerPos) {
+      const dx = attackerPos.x - this.playerPos.x;
+      const dz = attackerPos.z - this.playerPos.z;
+      const worldAng = Math.atan2(-dx, -dz);
+      let relDeg = ((worldAng - this.playerYaw) * 180) / Math.PI;
+      while (relDeg > 180) relDeg -= 360;
+      while (relDeg < -180) relDeg += 360;
+      this.hurtDirectionDeg = Math.round(-relDeg);
+      this.hurtDirTimer = 1.1;
+      impactPan = THREE.MathUtils.clamp(Math.sin((-relDeg * Math.PI) / 180), -0.85, 0.85);
+    } else {
+      this.hurtDirectionDeg = null;
+    }
+
+    // Metallic armour impact SFX & sparks
+    this.audio.playArmorImpact(impact.breakIntensity, impact.powerfulSpark, 0, impactPan);
+    if (impact.crackedPieces.length > 0) {
+      this.audio.playArmorCrack(impact.breakIntensity, 0, impactPan);
+    }
+    const sparkOrigin = this.playerPos.clone().add(
+      new THREE.Vector3(
+        -Math.sin(this.playerYaw) * 0.25,
+        this.currentEyeHeight - 0.38,
+        -Math.cos(this.playerYaw) * 0.25
+      )
+    );
+    this.spawnImpactParticles(sparkOrigin, impact.powerfulSpark ? 0xfbbf24 : 0x94a3b8, impact.powerfulSpark ? 8 : 4);
+
+    // Chest or Back armour breaking trigger (HUD banner, audio, network broadcast)
+    if (impact.newlyBreakingPiece) {
+      this.audio.playArmorBreak(impact.newlyBreakingPiece, 0, impactPan);
+      this.shakeIntensity = Math.max(this.shakeIntensity, 0.044);
+      const bothLost = isBodyArmourLost(this.armourState);
+      this.armourBanner = bothLost
+        ? {
+            title: 'BODY ARMOUR LOST',
+            subtitle: 'CHEST & BACK PLATES DESTROYED · UNDERSUIT EXPOSED',
+            critical: true,
+            timer: 4.5,
+          }
+        : {
+            title: 'ARMOUR DESTROYED',
+            subtitle:
+              impact.newlyBreakingPiece === 'chest'
+                ? 'CHEST PLATE SHATTERED — TORSO PROTECTION COMPROMISED'
+                : 'BACK PLATE SEPARATED — REAR PROTECTION COMPROMISED',
+            critical: false,
+            timer: 3.8,
+          };
+
+      if (this.playerNetSync.isEnabled()) {
+        this.playerNetSync.broadcastArmourBreak({
+          eventId: `${this.localPlayerIdentity.playerId}_${Date.now()}_${impact.newlyBreakingPiece}`,
+          playerId: this.localPlayerIdentity.playerId,
+          piece: impact.newlyBreakingPiece,
+          hitDirX: impact.breakDirLocal.x,
+          hitDirY: impact.breakDirLocal.y,
+          hitDirZ: impact.breakDirLocal.z,
+          intensity: impact.breakIntensity,
+          posX: this.playerPos.x,
+          posY: this.playerPos.y,
+          posZ: this.playerPos.z,
+          yaw: this.playerYaw,
+          timestamp: performance.now(),
+        });
+        this.playerNetSync.broadcastState(this.exportPlayerNetSnapshot(), true);
+      }
+      this.pushHud(true);
+    }
+
+    // Heavy hit knockdown stagger (resisted during Titan/Brute Fortress)
+    if (amount >= 21 && !fortressActive && this.knockdownTimer <= 0 && this.vaultTimer <= 0) {
+      this.knockdownTimer = 0.72;
+      this.isCrawling = false;
+    }
+
+    // Accumulate realistic dirt & blood wear on suit sleeves
+    this.playerWear = Math.min(1, this.playerWear + Math.min(0.16, amount * 0.0045));
+    this.updateSuitWearVisuals();
+
     // Degrade localized body/suit integrity proportionally
     const rawImpact = Math.max(2, dmg * 0.95 + (amount - dmg) * 0.25);
     const roll = Math.random();
@@ -3994,12 +5211,39 @@ export class FirstPersonGameEngine {
 
     this.damageFlash = 0.75;
     this.shakeIntensity = Math.max(this.shakeIntensity, 0.032);
-    this.hurtRoll = (Math.random() > 0.5 ? 1 : -1) * 0.08;
+    this.hurtRoll = (Math.random() > 0.5 ? 1 : -1) * 0.095;
     this.audio.playPlayerHurt();
+
+    if (this.health > 0 && this.health / Math.max(1, this.maxHealth) < 0.34) {
+      this.triggerQuip('low_hp', 18);
+    } else if (this.health > 0) {
+      this.triggerQuip('hurt', 16);
+    }
 
     if (this.health <= 0 && !this.isDead) {
       this.isDead = true;
       this.deathAnimTimer = 0.01;
+      const loadout = createWeaponLoadoutSnapshot(
+        this.weaponStates,
+        this.campaign.weaponUpgrades,
+        this.activeSlot
+      );
+      const corpseRecord = recordPlayerDeathCorpse({
+        ownerPlayerId: this.localPlayerIdentity.playerId,
+        ownerCallsign: this.localPlayerIdentity.callsign,
+        characterId: this.characterId,
+        missionId: this.missionId,
+        position: { x: this.playerPos.x, y: this.playerPos.y, z: this.playerPos.z },
+        yaw: this.playerYaw,
+        suitWear: this.playerWear,
+        loadout,
+        destroyedChest: this.armourState.pieces.chest.stage !== 'intact',
+        destroyedBack: this.armourState.pieces.back.stage !== 'intact',
+      });
+      this.spawnPersistentCorpseEntity(corpseRecord);
+      if (this.playerNetSync.isEnabled()) {
+        this.playerNetSync.broadcastState(this.exportPlayerNetSnapshot(), true);
+      }
       if (document.pointerLockElement === this.renderer.domElement) {
         document.exitPointerLock();
       }
@@ -4009,19 +5253,62 @@ export class FirstPersonGameEngine {
 
   private updatePlayer(dt: number): void {
     const charDef = CHARACTERS[this.characterId];
-    const isCrouching = Boolean(
-      this.keys['ControlLeft'] || this.keys['ControlRight'] || this.keys['KeyC'] || this.touchCrouch
-    );
+    if (this.knockdownTimer > 0) {
+      this.knockdownTimer = Math.max(0, this.knockdownTimer - dt);
+    }
+    if (this.hurtDirTimer > 0) {
+      this.hurtDirTimer = Math.max(0, this.hurtDirTimer - dt);
+      if (this.hurtDirTimer <= 0) this.hurtDirectionDeg = null;
+    }
+
+    const isCrouching =
+      !this.isCrawling &&
+      Boolean(this.keys['ControlLeft'] || this.keys['ControlRight'] || this.keys['KeyC'] || this.touchCrouch);
     const wantsSprint =
       Boolean(this.keys['ShiftLeft'] || this.keys['ShiftRight'] || this.touchSprint) &&
-      !isCrouching &&
-      !this.mouseDownRight;
-    const isSprinting = wantsSprint && this.stamina > 5;
+      !this.mouseDownRight &&
+      this.knockdownTimer <= 0 &&
+      this.vaultTimer <= 0;
+    if (wantsSprint && (isCrouching || this.isCrawling)) {
+      this.isCrawling = false;
+      this.touchCrouch = false;
+    }
+    const isSprinting = wantsSprint && !isCrouching && !this.isCrawling && this.stamina > 5;
+
+    // Smooth Vault / Climb Arc
+    if (this.vaultTimer > 0) {
+      this.vaultTimer = Math.max(0, this.vaultTimer - dt);
+      const t = 1 - this.vaultTimer / 0.34;
+      const smooth = t * t * (3 - 2 * t);
+      this.playerPos.lerpVectors(this.vaultStartPos, this.vaultEndPos, smooth);
+      const arcY = Math.sin(t * Math.PI) * 0.92;
+      this.currentEyeHeight = THREE.MathUtils.damp(this.currentEyeHeight, 1.32, 16, dt);
+      this.camera.position.set(
+        this.playerPos.x,
+        this.playerPos.y + this.currentEyeHeight + arcY,
+        this.playerPos.z
+      );
+      this.camera.rotation.set(this.playerPitch - Math.sin(t * Math.PI) * 0.14, this.playerYaw, 0, 'YXZ');
+      if (this.vaultTimer <= 0) {
+        this.grounded = true;
+        this.playerVel.set(0, 0, 0);
+        this.landDip = 0.06;
+      }
+      this.updateFirstPersonRig(dt, 4.5, false);
+      this.updateLocalPlayerBodyRig(dt, 4.5, false, false);
+      return;
+    }
 
     // Check Zero-Gravity zones & Flooded Water sections
-    let gravityScale = 1.0;
+    const isNoclip = this.noclipActive || this.characterId === 'god';
+    if (this.characterId === 'god' || this.godModeActive) {
+      this.health = this.maxHealth;
+      this.armor = this.maxArmor;
+    }
+
+    let gravityScale = isNoclip ? 0 : 1.0;
     this.inZeroG = false;
-    if (this.world.gravityZones) {
+    if (this.world.gravityZones && !isNoclip) {
       for (const gz of this.world.gravityZones) {
         if (
           this.playerPos.x >= gz.minX &&
@@ -4082,10 +5369,16 @@ export class FirstPersonGameEngine {
 
     const baseSpeed = 4.2 + (charDef.stats.speed / 100) * 2.2;
     let targetSpeed = baseSpeed;
-    if (isCrouching) targetSpeed *= 0.58;
+    if (this.knockdownTimer > 0) targetSpeed *= 0.22;
+    else if (this.isCrawling) targetSpeed *= 0.36;
+    else if (isCrouching) targetSpeed *= 0.58;
     else if (isSprinting) targetSpeed *= 1.48;
     if (this.inWater) targetSpeed *= 0.72;
-    if (this.characterId === 'raven' && this.abilityActive) targetSpeed *= 1.45;
+    if ((this.characterId === 'raven' || this.characterId === 'reaper') && this.abilityActive) {
+      targetSpeed *= 1.45;
+    } else if (this.characterId === 'phantom' && this.abilityActive) {
+      targetSpeed *= 1.35;
+    }
 
     const sinY = Math.sin(this.playerYaw);
     const cosY = Math.cos(this.playerYaw);
@@ -4099,51 +5392,66 @@ export class FirstPersonGameEngine {
     this.knockbackVel.z = THREE.MathUtils.damp(this.knockbackVel.z, 0, 4.8, dt);
 
     // Gravity, Escalator Belt Conveyance & Grounding
-    const prePlayerFloor = sampleFloorHeight(this.world.ramps, this.playerPos.x, this.playerPos.z, this.playerPos.y, 1.15);
-    let escBeltX = 0;
-    let escBeltZ = 0;
-    if (this.grounded && prePlayerFloor.onEscalator && Math.abs(prePlayerFloor.escalatorSpeed) > 0.05 && prePlayerFloor.ramp) {
-      const r = prePlayerFloor.ramp;
-      const horizSpan =
-        r.axis === 'x' && r.xStart !== undefined && r.xEnd !== undefined
-          ? r.xEnd - r.xStart
-          : r.zEnd - r.zStart;
-      const slopeLen = Math.hypot(Math.abs(horizSpan), r.yEnd - r.yStart) || 1;
-      const cosAng = Math.abs(horizSpan) / slopeLen;
-      const beltHoriz = prePlayerFloor.escalatorSpeed * cosAng;
-      if (r.axis === 'x') escBeltX = Math.sign(horizSpan) * beltHoriz;
-      else escBeltZ = Math.sign(horizSpan) * beltHoriz;
-    }
-
-    this.playerVel.y -= 18.5 * gravityScale * dt;
-    const nextX = this.playerPos.x + (this.playerVel.x + this.knockbackVel.x + escBeltX) * dt;
-    const nextZ = this.playerPos.z + (this.playerVel.z + this.knockbackVel.z + escBeltZ) * dt;
-    const resolved = this.resolveHorizontalCollision(nextX, nextZ, this.playerPos.y);
-    this.playerPos.x = resolved.x;
-    this.playerPos.z = resolved.z;
-
-    this.playerPos.y += this.playerVel.y * dt;
-    const floorY = this.groundHeightAt(this.playerPos.x, this.playerPos.z, this.playerPos.y);
-    if (this.playerPos.y <= floorY) {
-      if (!this.grounded && this.playerVel.y < -4) {
-        this.landDip = 0.08;
-        const pSurf = this.getSurfaceAt(this.playerPos.x, this.playerPos.z);
-        this.audio.playFootstep(true, isCrouching);
-        if (this.missionId === 'mission_03' && this.playerPos.z > -66 && this.playerPos.z < 18) {
-          this.audio.playMallFootstepEcho(true, isCrouching);
-        }
-        if (pSurf !== 'concrete') {
-          this.audio.playSurfaceFootstep(pSurf, 'medium', 1.15, 2.2, 0, 0);
-        }
-        if (!(this.characterId === 'ghost' && this.abilityActive)) {
-          this.soundBus.emit(this.playerPos.x, this.playerPos.y, this.playerPos.z, 14, 'footstep_run', this.elapsedSeconds, 'player');
-        }
+    if (isNoclip) {
+      if (this.keys['Space']) {
+        this.playerVel.y = 7.5;
+      } else if (this.keys['ShiftLeft'] || this.keys['ShiftRight'] || this.keys['KeyC']) {
+        this.playerVel.y = -7.5;
+      } else {
+        this.playerVel.y = 0;
       }
-      this.playerPos.y = floorY;
-      this.playerVel.y = 0;
-      this.grounded = true;
-    } else {
+      this.playerPos.x += (this.playerVel.x + this.knockbackVel.x) * dt;
+      this.playerPos.z += (this.playerVel.z + this.knockbackVel.z) * dt;
+      this.playerPos.y += this.playerVel.y * dt;
       this.grounded = false;
+    } else {
+      const prePlayerFloor = sampleFloorHeight(this.world.ramps, this.playerPos.x, this.playerPos.z, this.playerPos.y, 1.15);
+      let escBeltX = 0;
+      let escBeltZ = 0;
+      if (this.grounded && prePlayerFloor.onEscalator && Math.abs(prePlayerFloor.escalatorSpeed) > 0.05 && prePlayerFloor.ramp) {
+        const r = prePlayerFloor.ramp;
+        const horizSpan =
+          r.axis === 'x' && r.xStart !== undefined && r.xEnd !== undefined
+            ? r.xEnd - r.xStart
+            : r.zEnd - r.zStart;
+        const slopeLen = Math.hypot(Math.abs(horizSpan), r.yEnd - r.yStart) || 1;
+        const cosAng = Math.abs(horizSpan) / slopeLen;
+        const beltHoriz = prePlayerFloor.escalatorSpeed * cosAng;
+        if (r.axis === 'x') escBeltX = Math.sign(horizSpan) * beltHoriz;
+        else escBeltZ = Math.sign(horizSpan) * beltHoriz;
+      }
+
+      this.playerVel.y -= 18.5 * gravityScale * dt;
+      const nextX = this.playerPos.x + (this.playerVel.x + this.knockbackVel.x + escBeltX) * dt;
+      const nextZ = this.playerPos.z + (this.playerVel.z + this.knockbackVel.z + escBeltZ) * dt;
+      const playerCapsuleH = this.isCrawling ? 0.72 : isCrouching ? 1.15 : 1.65;
+      const resolved = this.resolveHorizontalCollision(nextX, nextZ, this.playerPos.y, 0.48, playerCapsuleH);
+      this.playerPos.x = resolved.x;
+      this.playerPos.z = resolved.z;
+
+      this.playerPos.y += this.playerVel.y * dt;
+      const floorY = this.groundHeightAt(this.playerPos.x, this.playerPos.z, this.playerPos.y);
+      if (this.playerPos.y <= floorY) {
+        if (!this.grounded && this.playerVel.y < -4) {
+          this.landDip = 0.08;
+          const pSurf = this.getSurfaceAt(this.playerPos.x, this.playerPos.z);
+          this.audio.playFootstep(true, isCrouching || this.isCrawling);
+          if (this.missionId === 'mission_03' && this.playerPos.z > -66 && this.playerPos.z < 18) {
+            this.audio.playMallFootstepEcho(true, isCrouching || this.isCrawling);
+          }
+          if (pSurf !== 'concrete') {
+            this.audio.playSurfaceFootstep(pSurf, 'medium', 1.15, 2.2, 0, 0);
+          }
+          if (!((this.characterId === 'ghost' || this.characterId === 'phantom') && this.abilityActive)) {
+            this.soundBus.emit(this.playerPos.x, this.playerPos.y, this.playerPos.z, 14, 'footstep_run', this.elapsedSeconds, 'player');
+          }
+        }
+        this.playerPos.y = floorY;
+        this.playerVel.y = 0;
+        this.grounded = true;
+      } else {
+        this.grounded = false;
+      }
     }
 
     // Footsteps, Acoustic Footstep Radius & Head Bob
@@ -4152,16 +5460,23 @@ export class FirstPersonGameEngine {
       const prevStep = Math.floor(this.stepDist / 2.0);
       this.stepDist += horizSpeed * dt;
       if (Math.floor(this.stepDist / 2.0) > prevStep) {
-        if (!(this.characterId === 'ghost' && this.abilityActive)) {
+        if (!((this.characterId === 'ghost' || this.characterId === 'phantom') && this.abilityActive)) {
           const pSurf = this.getSurfaceAt(this.playerPos.x, this.playerPos.z);
-          this.audio.playFootstep(isSprinting, isCrouching);
+          this.audio.playFootstep(isSprinting, isCrouching || this.isCrawling);
           if (this.missionId === 'mission_03' && this.playerPos.z > -66 && this.playerPos.z < 18) {
-            this.audio.playMallFootstepEcho(isSprinting, isCrouching);
+            this.audio.playMallFootstepEcho(isSprinting, isCrouching || this.isCrawling);
           }
           if (pSurf !== 'concrete') {
-            this.audio.playSurfaceFootstep(pSurf, 'medium', isSprinting ? 1.15 : isCrouching ? 0.45 : 0.75, 2.5, 0, 0);
+            this.audio.playSurfaceFootstep(
+              pSurf,
+              'medium',
+              isSprinting ? 1.15 : this.isCrawling ? 0.3 : isCrouching ? 0.45 : 0.75,
+              2.5,
+              0,
+              0
+            );
           }
-          if (!isCrouching) {
+          if (!isCrouching && !this.isCrawling) {
             this.soundBus.emit(
               this.playerPos.x,
               this.playerPos.y,
@@ -4176,11 +5491,25 @@ export class FirstPersonGameEngine {
       }
     }
 
+    // Accumulate environmental mud/dust gradually while crawling
+    if (this.isCrawling && horizSpeed > 0.3) {
+      this.playerWear = Math.min(1, this.playerWear + dt * 0.025);
+      this.updateSuitWearVisuals();
+    }
+
     const standingUp = this.introWakeupTimer > 0;
     if (standingUp) {
       this.introWakeupTimer = Math.max(0, this.introWakeupTimer - dt);
     }
-    const targetEye = standingUp ? 1.68 : isCrouching ? 1.02 : 1.68;
+    const targetEye = standingUp
+      ? 1.68
+      : this.knockdownTimer > 0
+        ? 0.65
+        : this.isCrawling
+          ? 0.58
+          : isCrouching
+            ? 1.02
+            : 1.68;
     this.currentEyeHeight = THREE.MathUtils.damp(this.currentEyeHeight, targetEye, standingUp ? 3.2 : 10, dt);
     this.landDip = THREE.MathUtils.damp(this.landDip, 0, 12, dt);
     this.hurtRoll = THREE.MathUtils.damp(this.hurtRoll, 0, 8, dt);
@@ -4190,9 +5519,10 @@ export class FirstPersonGameEngine {
     const shakeX = (Math.random() - 0.5) * this.shakeIntensity * shakeScale;
     const shakeY = (Math.random() - 0.5) * this.shakeIntensity * shakeScale;
 
+    const injuredLimp = this.health / Math.max(1, this.maxHealth) < 0.42 && horizSpeed > 0.6 ? 1.35 : 1.0;
     const bobAmp =
       !this.settings.reducedMotion && this.grounded
-        ? Math.min(0.045, horizSpeed * 0.0065)
+        ? Math.min(0.055, horizSpeed * 0.0065 * injuredLimp)
         : 0;
     const bobY = Math.sin(this.stepDist * 3.1) * bobAmp;
     const bobX = Math.cos(this.stepDist * 1.55) * bobAmp * 0.6;
@@ -4203,8 +5533,32 @@ export class FirstPersonGameEngine {
       this.playerPos.z
     );
 
-    const crouchTilt = isCrouching ? 0.03 : 0;
-    this.camera.rotation.set(this.playerPitch, this.playerYaw, this.hurtRoll + crouchTilt, 'YXZ');
+    const crouchTilt = this.isCrawling ? 0.055 : isCrouching ? 0.03 : 0;
+    const kdRoll = this.knockdownTimer > 0 ? Math.sin((this.knockdownTimer / 0.72) * Math.PI) * 0.22 : 0;
+
+    if (this.thirdPersonView) {
+      const shoulderPivot = _vec3A.set(
+        this.playerPos.x + Math.cos(this.playerYaw) * 0.42 + shakeX,
+        this.playerPos.y + this.currentEyeHeight - 0.12 - this.landDip + shakeY,
+        this.playerPos.z - Math.sin(this.playerYaw) * 0.42
+      );
+      const cosP = Math.cos(this.playerPitch);
+      const backX = Math.sin(this.playerYaw) * cosP;
+      const backY = Math.sin(this.playerPitch);
+      const backZ = Math.cos(this.playerYaw) * cosP;
+      const desiredDist = this.mouseDownRight ? 1.55 : 2.65;
+      _dir.set(backX, backY + 0.1, backZ).normalize();
+      const wallHit = this.raycastWorldColliders(shoulderPivot, _dir, desiredDist);
+      const safeDist = wallHit ? Math.max(0.55, wallHit.dist - 0.22) : desiredDist;
+      this.camera.position.copy(shoulderPivot).addScaledVector(_dir, safeDist);
+    } else {
+      this.camera.position.set(
+        this.playerPos.x + bobX + shakeX,
+        this.playerPos.y + this.currentEyeHeight + bobY - this.landDip + shakeY,
+        this.playerPos.z
+      );
+    }
+    this.camera.rotation.set(this.playerPitch, this.playerYaw, this.hurtRoll + crouchTilt + kdRoll, 'YXZ');
 
     // ADS FOV smooth damping
     const wDef = this.getActiveWeaponDef();
@@ -4235,6 +5589,316 @@ export class FirstPersonGameEngine {
     }
 
     this.updateFirstPersonRig(dt, horizSpeed, isSprinting);
+    this.updateLocalPlayerBodyRig(dt, horizSpeed, isCrouching, isSprinting);
+  }
+
+  private animateCharacterBodyPose(
+    group: THREE.Group,
+    pos: THREE.Vector3,
+    yaw: number,
+    pitch: number,
+    walkPhase: number,
+    horizSpeed: number,
+    isCrouching: boolean,
+    isCrawling: boolean
+  ): void {
+    group.position.copy(pos);
+    group.rotation.y = yaw + Math.PI;
+    const rig = group.userData.rig as FullBodyCharacterRig | undefined;
+    if (!rig) return;
+
+    if (isCrawling) {
+      group.rotation.x = -1.28;
+      group.position.y = pos.y + 0.24;
+    } else {
+      group.rotation.x = 0;
+    }
+
+    const strideAmp = Math.min(0.65, horizSpeed * 0.12);
+    const swing = Math.sin(walkPhase) * strideAmp;
+    const crouchHip = isCrouching && !isCrawling ? -0.35 : 0;
+
+    rig.leftLegGroup.rotation.x = swing + crouchHip;
+    rig.rightLegGroup.rotation.x = -swing + crouchHip;
+    rig.torsoGroup.position.y =
+      (isCrouching && !isCrawling ? 0.58 : 0.72) + Math.abs(Math.sin(walkPhase)) * strideAmp * 0.06;
+    rig.torsoGroup.rotation.x = isCrouching ? 0.18 : 0.04;
+    rig.headGroup.rotation.x = THREE.MathUtils.clamp(-pitch * 0.65, -0.55, 0.55);
+    rig.leftArmGroup.rotation.x = -0.15 - swing * 0.45;
+    rig.rightArmGroup.rotation.x = -0.15 + swing * 0.35;
+
+    // Phantom stealth shimmer on third-person/remote body
+    const stealthActive =
+      (this.characterId === 'phantom' || this.characterId === 'ghost') &&
+      group === this.playerBodyRig &&
+      this.abilityActive;
+    for (const sm of rig.stealthMaterials) {
+      sm.transparent = stealthActive;
+      sm.opacity = stealthActive ? 0.35 : 1.0;
+    }
+  }
+
+  private spawnPieceBreakFragments(
+    pos: THREE.Vector3,
+    yaw: number,
+    piece: 'chest' | 'back',
+    phase: 'sparks_shards' | 'chest_shatter' | 'fasteners' | 'back_shatter',
+    armorColorHex: number,
+    trimColorHex: number,
+    intensity: number,
+    isLocalPlayer: boolean
+  ): void {
+    const fwdX = -Math.sin(yaw);
+    const fwdZ = -Math.cos(yaw);
+    const sign = piece === 'chest' ? 1 : -1;
+    const origin = new THREE.Vector3(
+      pos.x + fwdX * sign * 0.34,
+      pos.y + 1.18,
+      pos.z + fwdZ * sign * 0.34
+    );
+    const outward = new THREE.Vector3(fwdX * sign, 0.28, fwdZ * sign);
+    spawnArmourFragments(
+      this.scene,
+      this.armourFragments,
+      origin,
+      outward,
+      armorColorHex,
+      trimColorHex,
+      phase,
+      intensity
+    );
+    this.spawnImpactParticles(origin, 0xfbbf24, phase === 'sparks_shards' ? 12 : 8);
+    if (isLocalPlayer) {
+      this.shakeIntensity = Math.max(this.shakeIntensity, 0.025 * intensity);
+    }
+  }
+
+  private updateLocalPlayerBodyRig(
+    dt: number,
+    horizSpeed: number,
+    isCrouching: boolean,
+    isSprinting: boolean
+  ): void {
+    if (!this.playerBodyRig) return;
+    if (horizSpeed > 0.25) {
+      this.bodyWalkPhase += dt * (isSprinting ? 11.5 : 7.5) * Math.min(1.5, horizSpeed / 4.2);
+    }
+    this.playerBodyRig.visible = this.thirdPersonView && !this.isDead;
+    this.animateCharacterBodyPose(
+      this.playerBodyRig,
+      this.playerPos,
+      this.playerYaw,
+      this.playerPitch,
+      this.bodyWalkPhase,
+      horizSpeed,
+      isCrouching,
+      this.isCrawling
+    );
+
+    const rig = this.playerBodyRig.userData.rig as FullBodyCharacterRig | undefined;
+    if (!rig?.armourRig) return;
+    const aRig = rig.armourRig;
+
+    updateFullBodyArmourRig(aRig, this.armourState, dt, this.elapsedSeconds, {
+      onChestPhase: (phase, intensity) => {
+        if (phase === 'crack_spread') {
+          this.audio.playArmorCrack(intensity, 0, 0);
+        } else if (phase === 'sparks_outward') {
+          this.spawnPieceBreakFragments(
+            this.playerPos,
+            this.playerYaw,
+            'chest',
+            'sparks_shards',
+            aRig.armorColorHex,
+            aRig.trimColorHex,
+            intensity,
+            true
+          );
+        } else if (phase === 'plate_shatter') {
+          this.spawnPieceBreakFragments(
+            this.playerPos,
+            this.playerYaw,
+            'chest',
+            'chest_shatter',
+            aRig.armorColorHex,
+            aRig.trimColorHex,
+            intensity,
+            true
+          );
+        }
+      },
+      onBackPhase: (phase, intensity) => {
+        if (phase === 'fastener_snap') {
+          this.audio.playArmorCrack(intensity * 0.9, 0, 0);
+          this.spawnPieceBreakFragments(
+            this.playerPos,
+            this.playerYaw,
+            'back',
+            'fasteners',
+            aRig.armorColorHex,
+            aRig.trimColorHex,
+            intensity,
+            true
+          );
+        } else if (phase === 'plate_separate') {
+          this.spawnPieceBreakFragments(
+            this.playerPos,
+            this.playerYaw,
+            'back',
+            'back_shatter',
+            aRig.armorColorHex,
+            aRig.trimColorHex,
+            intensity,
+            true
+          );
+        }
+      },
+    });
+  }
+
+  private updateRemotePlayers(dt: number): void {
+    if (!this.isCoopSession || !this.playerNetSync.isEnabled()) return;
+
+    this.playerNetSync.broadcastState(this.exportPlayerNetSnapshot());
+
+    // Process remote armour break events so co-op allies trigger shatter SFX + shards
+    const breakEvents = this.playerNetSync.consumePendingBreakEvents();
+    for (const ev of breakEvents) {
+      const rp = this.remotePlayers.get(ev.playerId);
+      if (!rp) continue;
+      const p = rp.armourState.pieces[ev.piece];
+      if (p && p.stage === 'intact') {
+        p.durability = 0;
+        p.stage = 'breaking';
+        p.breakTimer = 0;
+        p.breakIntensity = ev.intensity;
+        p.breakDirLocal.set(ev.hitDirX, ev.hitDirY, ev.hitDirZ);
+        p.cracksSpreadTriggered = false;
+        p.sparksBurstTriggered = false;
+        p.shatterDropTriggered = false;
+      }
+      const dist = Math.hypot(ev.posX - this.playerPos.x, ev.posZ - this.playerPos.z);
+      const pan = THREE.MathUtils.clamp(
+        ((ev.posX - this.playerPos.x) * Math.cos(this.playerYaw) -
+          (ev.posZ - this.playerPos.z) * Math.sin(this.playerYaw)) /
+          Math.max(1, dist),
+        -1,
+        1
+      );
+      this.audio.playArmorBreak(ev.piece, dist, pan);
+    }
+
+    const nowMs = performance.now();
+    const snaps = this.playerNetSync.getRemoteSnapshots(nowMs);
+    const seenIds = new Set<string>();
+
+    for (const snap of snaps) {
+      seenIds.add(snap.playerId);
+      let rp = this.remotePlayers.get(snap.playerId);
+      if (!rp) {
+        const grp = buildFullBodyCharacter(normalizeCharacterId(snap.characterId), this.textures);
+        this.scene.add(grp);
+        const charMax = CHARACTERS[normalizeCharacterId(snap.characterId)]?.stats.armor ?? 60;
+        rp = {
+          playerId: snap.playerId,
+          callsign: snap.callsign,
+          characterId: normalizeCharacterId(snap.characterId),
+          group: grp,
+          armourState: createArmourSystemState(charMax),
+          position: new THREE.Vector3(snap.x, snap.y, snap.z),
+          yaw: snap.yaw,
+          walkPhase: 0,
+          lastTimestamp: snap.timestamp,
+        };
+        this.remotePlayers.set(snap.playerId, rp);
+      }
+
+      const prevX = rp.position.x;
+      const prevZ = rp.position.z;
+      rp.position.x = THREE.MathUtils.damp(rp.position.x, snap.x, 12, dt);
+      rp.position.y = THREE.MathUtils.damp(rp.position.y, snap.y, 12, dt);
+      rp.position.z = THREE.MathUtils.damp(rp.position.z, snap.z, 12, dt);
+      let dyaw = snap.yaw - rp.yaw;
+      while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+      while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+      rp.yaw += dyaw * Math.min(1, dt * 12);
+
+      const movedSpeed = Math.hypot(rp.position.x - prevX, rp.position.z - prevZ) / Math.max(dt, 0.001);
+      if (movedSpeed > 0.25) {
+        rp.walkPhase += dt * (snap.isSprinting ? 11.5 : 7.5);
+      }
+      rp.group.visible = !snap.isDead;
+      this.animateCharacterBodyPose(
+        rp.group,
+        rp.position,
+        rp.yaw,
+        snap.pitch,
+        rp.walkPhase,
+        movedSpeed,
+        snap.isCrouching,
+        snap.isCrawling
+      );
+
+      // Reconcile remote armour durabilities & stages
+      for (const id of ALL_ARMOUR_PIECE_IDS) {
+        const src = snap.armour[id];
+        const dst = rp.armourState.pieces[id];
+        if (!src || !dst) continue;
+        dst.durability = src.durability;
+        if (dst.destructible) {
+          if (src.stage === 'destroyed' && dst.stage === 'intact') {
+            dst.stage = 'destroyed';
+          } else if (src.stage === 'intact') {
+            dst.stage = 'intact';
+          }
+        }
+      }
+
+      const rig = rp.group.userData.rig as FullBodyCharacterRig | undefined;
+      if (rig?.armourRig) {
+        const aRig = rig.armourRig;
+        const rPos = rp.position;
+        const rYaw = rp.yaw;
+        updateFullBodyArmourRig(aRig, rp.armourState, dt, this.elapsedSeconds, {
+          onChestPhase: (phase, intensity) => {
+            if (phase === 'sparks_outward' || phase === 'plate_shatter') {
+              this.spawnPieceBreakFragments(
+                rPos,
+                rYaw,
+                'chest',
+                phase === 'sparks_outward' ? 'sparks_shards' : 'chest_shatter',
+                aRig.armorColorHex,
+                aRig.trimColorHex,
+                intensity,
+                false
+              );
+            }
+          },
+          onBackPhase: (phase, intensity) => {
+            if (phase === 'fastener_snap' || phase === 'plate_separate') {
+              this.spawnPieceBreakFragments(
+                rPos,
+                rYaw,
+                'back',
+                phase === 'fastener_snap' ? 'fasteners' : 'back_shatter',
+                aRig.armorColorHex,
+                aRig.trimColorHex,
+                intensity,
+                false
+              );
+            }
+          },
+        });
+      }
+    }
+
+    for (const [pid, rp] of this.remotePlayers) {
+      if (!seenIds.has(pid)) {
+        this.scene.remove(rp.group);
+        this.disposeObject3D(rp.group);
+        this.remotePlayers.delete(pid);
+      }
+    }
   }
 
   private updateFirstPersonRig(dt: number, horizSpeed: number, isSprinting: boolean): void {
@@ -4255,6 +5919,7 @@ export class FirstPersonGameEngine {
     if (this.meleeAnimTimer > 0) this.meleeAnimTimer = Math.max(0, this.meleeAnimTimer - dt);
     if (this.healAnimTimer > 0) this.healAnimTimer = Math.max(0, this.healAnimTimer - dt);
     if (this.abilityAnimTimer > 0) this.abilityAnimTimer = Math.max(0, this.abilityAnimTimer - dt);
+    if (this.interactAnimTimer > 0) this.interactAnimTimer = Math.max(0, this.interactAnimTimer - dt);
 
     this.recoilOffset = THREE.MathUtils.damp(this.recoilOffset, 0, 16, dt);
 
@@ -4268,7 +5933,8 @@ export class FirstPersonGameEngine {
       rig.muzzleLight.intensity = 0;
     }
 
-    const breath = Math.sin(this.elapsedSeconds * 2.1) * 0.004;
+    const lowHpFactor = this.health / Math.max(1, this.maxHealth) < 0.4 ? 1.9 : 1.0;
+    const breath = Math.sin(this.elapsedSeconds * (2.1 * lowHpFactor)) * (0.004 * lowHpFactor);
     const swayX = Math.cos(this.stepDist * 1.55) * Math.min(0.018, horizSpeed * 0.0025);
     const swayY = Math.abs(Math.sin(this.stepDist * 1.55)) * Math.min(0.018, horizSpeed * 0.0025);
 
@@ -4279,20 +5945,32 @@ export class FirstPersonGameEngine {
     const reloadDip = this.isReloading ? Math.sin((this.reloadTimer / this.reloadDuration) * Math.PI) * 0.14 : 0;
     const switchDip = this.switchAnimTimer > 0 ? Math.sin((this.switchAnimTimer / 0.28) * Math.PI) * 0.2 : 0;
     const meleeThrust = this.meleeAnimTimer > 0 ? Math.sin((this.meleeAnimTimer / 0.36) * Math.PI) * 0.28 : 0;
+    const interactReach = this.interactAnimTimer > 0 ? Math.sin((this.interactAnimTimer / 0.34) * Math.PI) * 0.14 : 0;
+    const kdDip = this.knockdownTimer > 0 ? Math.sin((this.knockdownTimer / 0.72) * Math.PI) * 0.26 : 0;
+    const crawlDrop = this.isCrawling ? 0.045 : 0;
     const sprintRot = isSprinting && !this.mouseDownRight ? 0.32 : 0;
 
     piv.position.x = THREE.MathUtils.damp(piv.position.x, adsX + swayX, 16, dt);
     piv.position.y = THREE.MathUtils.damp(
       piv.position.y,
-      adsY + breath - swayY - reloadDip - switchDip - this.healAnimTimer * 0.15,
+      adsY + breath - swayY - reloadDip - switchDip - this.healAnimTimer * 0.15 - kdDip - crawlDrop,
       16,
       dt
     );
-    piv.position.z = THREE.MathUtils.damp(piv.position.z, adsZ + this.recoilOffset - meleeThrust, 18, dt);
+    piv.position.z = THREE.MathUtils.damp(
+      piv.position.z,
+      adsZ + this.recoilOffset - meleeThrust - interactReach,
+      18,
+      dt
+    );
 
     piv.rotation.x = THREE.MathUtils.damp(
       piv.rotation.x,
-      this.recoilOffset * 1.4 - (this.isReloading ? 0.35 : 0) + (this.abilityAnimTimer > 0 ? 0.3 : 0),
+      this.recoilOffset * 1.4 -
+        (this.isReloading ? 0.35 : 0) +
+        (this.abilityAnimTimer > 0 ? 0.3 : 0) -
+        (this.interactAnimTimer > 0 ? 0.22 : 0) -
+        kdDip * 1.2,
       16,
       dt
     );
@@ -4300,12 +5978,28 @@ export class FirstPersonGameEngine {
 
     rig.magazine.position.y = this.isReloading ? -0.22 : -0.1;
 
+    // Left arm interact reach animation + Phantom phase shimmer
+    rig.leftArm.position.z = THREE.MathUtils.damp(
+      rig.leftArm.position.z,
+      this.interactAnimTimer > 0 ? -0.28 : -0.12,
+      18,
+      dt
+    );
+    if (rig.accentMat) {
+      if (this.characterId === 'phantom' && this.abilityActive) {
+        rig.accentMat.emissiveIntensity = 2.6 + Math.sin(this.elapsedSeconds * 16) * 0.6;
+      } else {
+        rig.accentMat.emissiveIntensity = 1.4;
+      }
+    }
+
     const wDef = this.getActiveWeaponDef();
     const sniperAds = wDef.id === 'sniper_rifle' && this.mouseDownRight && !this.isReloading;
-    rig.root.visible = !sniperAds;
-    if (sniperAds && !this.flashlightAttachedToCam) {
+    rig.root.visible = !sniperAds && !this.thirdPersonView;
+    const forceCamLight = sniperAds || this.thirdPersonView;
+    if (forceCamLight && !this.flashlightAttachedToCam) {
       this.attachFlashlightToActiveRig(true);
-    } else if (!sniperAds && this.flashlightAttachedToCam) {
+    } else if (!forceCamLight && this.flashlightAttachedToCam) {
       this.attachFlashlightToActiveRig(false);
     }
   }
@@ -4313,9 +6007,12 @@ export class FirstPersonGameEngine {
   private updateEnemies(dt: number): void {
     const simDt = Math.min(dt, 0.05);
     this.soundBus.prune(this.elapsedSeconds);
-    const ghostStealth = this.characterId === 'ghost' && this.abilityActive;
+    const ghostStealth =
+      (this.characterId === 'ghost' || this.characterId === 'phantom') && this.abilityActive;
     const isFlashlightOn = this.flashlightOn && this.flashlightBattery > 0;
-    const isPlayerCrouching = Boolean(this.keys['ControlLeft'] || this.keys['ControlRight'] || this.keys['KeyC']);
+    const isPlayerCrouching =
+      this.isCrawling ||
+      Boolean(this.keys['ControlLeft'] || this.keys['ControlRight'] || this.keys['KeyC'] || this.touchCrouch);
     const playerMovingFast = Math.hypot(this.playerVel.x, this.playerVel.z) > 2.2;
     const isRemoteCoopClient = this.isCoopSession && this.monsterNetSync.getRole() === 'client';
 
@@ -4478,6 +6175,10 @@ export class FirstPersonGameEngine {
           enemy.refs.group.visible = netT.active;
           enemy.refs.group.position.copy(enemy.position);
           enemy.refs.group.rotation.y = enemy.yaw;
+          if (netT.formerMeta) {
+            enemy.activeWeaponSlot = netT.formerMeta.activeWeaponSlot;
+            enemy.hesitationState = netT.formerMeta.hesitating ? 'hesitating' : 'overwhelmed';
+          }
           const actualMoved = rec.actualHorizMoved;
           const healthRatioNet = enemy.health / Math.max(1, enemy.maxHealth);
           updateMonsterAnimations(enemy.refs, enemy.anim, {
@@ -4502,6 +6203,11 @@ export class FirstPersonGameEngine {
             escalatorSpeed: enemy.escalatorSpeed,
             verticalVel: enemy.vy,
             grounded: enemy.grounded,
+            isHesitating: Boolean(netT.formerMeta?.hesitating),
+            hesitationProgress: netT.formerMeta?.hesitating ? 0.65 : 0,
+            formerActiveSlot: netT.formerMeta?.activeWeaponSlot ?? enemy.activeWeaponSlot,
+            formerIlluminated:
+              enemy.type === 'the_former' ? this.isPositionIlluminatedByFlashlight(enemy.position) : false,
           });
           updateMonsterTentacles(enemy.refs, enemy.tentacleState, {
             dt: simDt,
@@ -4750,6 +6456,115 @@ export class FirstPersonGameEngine {
         this.moveEnemyWithCollision(enemy, enemy.leapVel.x, enemy.leapVel.z, simDt);
       }
 
+      // THE FORMER: update timers, weapon recoil/reload, recognition hesitation & HUD biometric warnings
+      if (enemy.type === 'the_former') {
+        if ((enemy.formerMuzzleTimer ?? 0) > 0) {
+          enemy.formerMuzzleTimer = Math.max(0, (enemy.formerMuzzleTimer ?? 0) - simDt);
+        }
+        if (enemy.refs.formerRig) {
+          enemy.refs.formerRig.corruptedMuzzleFlash.visible = (enemy.formerMuzzleTimer ?? 0) > 0;
+        }
+        if ((enemy.formerWeaponRecoil ?? 0) > 0) {
+          enemy.formerWeaponRecoil = Math.max(0, (enemy.formerWeaponRecoil ?? 0) - simDt * 5.2);
+        }
+        if ((enemy.formerReloadTimer ?? 0) > 0) {
+          enemy.formerReloadTimer = Math.max(0, (enemy.formerReloadTimer ?? 0) - simDt);
+          if (enemy.formerReloadTimer <= 0) {
+            const slot = enemy.activeWeaponSlot ?? 0;
+            const wId = (slot === 1 ? enemy.secondaryWeaponId : enemy.primaryWeaponId) ?? 'assault_rifle';
+            const magCap = WEAPONS[wId]?.magSize ?? 24;
+            if (slot === 0) {
+              const take = Math.min(magCap, enemy.weaponReserveAmmo ?? 0);
+              enemy.weaponMagAmmo = take;
+              enemy.weaponReserveAmmo = Math.max(0, (enemy.weaponReserveAmmo ?? 0) - take);
+            } else {
+              const take = Math.min(magCap, enemy.secondaryReserveAmmo ?? 0);
+              enemy.secondaryMagAmmo = take;
+              enemy.secondaryReserveAmmo = Math.max(0, (enemy.secondaryReserveAmmo ?? 0) - take);
+            }
+          }
+        }
+        if ((enemy.hesitationCooldown ?? 0) > 0) {
+          enemy.hesitationCooldown = Math.max(0, (enemy.hesitationCooldown ?? 0) - simDt);
+        }
+
+        if (enemy.hesitationState === 'hesitating') {
+          enemy.hesitationTimer = Math.max(0, (enemy.hesitationTimer ?? 0) - simDt);
+          const elapsedHes = (enemy.hesitationDuration ?? 2.45) - enemy.hesitationTimer;
+          if (elapsedHes >= 0.9 && (enemy.formerAlertStage ?? 0) < 2) {
+            enemy.formerAlertStage = 2;
+            this.triggerFormerAlert({
+              id: `rec_id_${enemy.id}`,
+              tag: 'IDENTITY FRAGMENT RECOGNIZED',
+              identityLine: `CALLSIGN: ${enemy.ownerCallsign ?? 'OPERATIVE'}`,
+              subtitle: 'BIOMETRIC MATCH CONFIRMED — TARGET HESITATING',
+              classification: 'CLASSIFICATION: FORMER OPERATIVE',
+              threatLevel: 'HIGH',
+              isOriginalOwner: true,
+              stageKind: 'recognition',
+              timer: 2.2,
+              maxTimer: 2.2,
+            });
+          }
+          if (enemy.hesitationTimer <= 0) {
+            enemy.hesitationState = 'overwhelmed';
+            enemy.hesitationCooldown = 22.0;
+            enemy.formerAlertStage = 3;
+            this.triggerFormerAlert({
+              id: `rec_hostile_${enemy.id}`,
+              tag: 'INFECTION OVERRIDE',
+              identityLine: `FORMER IDENTITY: ${enemy.ownerCallsign ?? 'OPERATIVE'}`,
+              subtitle: 'NEURAL RECOGNITION SEVERED — RESUMING ATTACK',
+              classification: 'CLASSIFICATION: HOSTILE',
+              threatLevel: 'CRITICAL',
+              isOriginalOwner: true,
+              stageKind: 'recognition',
+              timer: 3.4,
+              maxTimer: 3.4,
+            });
+          }
+        } else if (losVisible && distToTarget < 24 && !this.droneMesh && !this.isDead) {
+          const isOwner = enemy.ownerPlayerId === this.localPlayerIdentity.playerId;
+          if (
+            isOwner &&
+            (enemy.hesitationState === 'none' ||
+              (enemy.hesitationState === 'overwhelmed' && (enemy.hesitationCooldown ?? 0) <= 0))
+          ) {
+            enemy.hesitationState = 'hesitating';
+            enemy.hesitationDuration = 2.35 + Math.random() * 0.65;
+            enemy.hesitationTimer = enemy.hesitationDuration;
+            enemy.formerAlertStage = 1;
+            this.audio.playFormerRecognitionWhisper(distToCam, pan, occludedWalls, verticalDelta);
+            this.triggerFormerAlert({
+              id: `rec_bio_${enemy.id}`,
+              tag: 'BIOLOGICAL SIGNATURE DETECTED',
+              identityLine: `SUBJECT: ${enemy.ownerCallsign ?? 'OPERATIVE'}`,
+              subtitle: 'ANOMALOUS RECOGNITION PAUSE OBSERVED',
+              classification: 'CLASSIFICATION: ANALYZING...',
+              threatLevel: 'ELEVATED',
+              isOriginalOwner: true,
+              stageKind: 'recognition',
+              timer: 1.6,
+              maxTimer: 1.6,
+            });
+          } else if (!isOwner && (enemy.formerAlertStage ?? 0) === 0) {
+            enemy.formerAlertStage = 1;
+            this.triggerFormerAlert({
+              id: `unknown_former_${enemy.id}`,
+              tag: 'UNKNOWN INFECTED SIGNATURE',
+              identityLine: `FORMER OPERATIVE: ${enemy.ownerCallsign ?? 'UNKNOWN'}`,
+              subtitle: 'ARMED REANIMATED HUMAN DETECTED',
+              classification: 'CLASSIFICATION: HOSTILE',
+              threatLevel: 'HIGH',
+              isOriginalOwner: false,
+              stageKind: 'unknown',
+              timer: 3.6,
+              maxTimer: 3.6,
+            });
+          }
+        }
+      }
+
       if (aiDecision.justAlerted) {
         enemy.vocalTimer = Math.max(enemy.vocalTimer, 0.85);
         if (enemy.type === 'screamer') {
@@ -4764,6 +6579,7 @@ export class FirstPersonGameEngine {
           if (enemy.neckState) enemy.neckState.roarTimer = 1.65;
           const bossMeta = BOSS_DISPLAY_NAMES[enemy.type];
           this.showRadio('APEX THREAT DETECTED', `${bossMeta?.name ?? enemy.type.toUpperCase()} — ${bossMeta?.subtitle ?? 'ENGAGING'}`);
+          this.triggerQuip('boss_encounter', 24);
         }
       }
 
@@ -4860,14 +6676,19 @@ export class FirstPersonGameEngine {
       let moveGoal: THREE.Vector3 | null = null;
       let desiredSpeed = 0;
 
-      if (enemy.state === 'STUNNED' || enemy.state === 'BOSS_INTRO') {
+      if (
+        enemy.state === 'STUNNED' ||
+        enemy.state === 'BOSS_INTRO' ||
+        (enemy.type === 'the_former' && enemy.hesitationState === 'hesitating')
+      ) {
         desiredSpeed = 0;
         _vec3B.copy(targetPos).sub(enemy.position);
         const targetYaw = Math.atan2(_vec3B.x, _vec3B.z);
         let diff = targetYaw - enemy.yaw;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
-        enemy.yaw += diff * Math.min(1, simDt * profile.turnRate);
+        const turnScale = enemy.type === 'the_former' && enemy.hesitationState === 'hesitating' ? 0.85 : 1.0;
+        enemy.yaw += diff * Math.min(1, simDt * profile.turnRate * turnScale);
       } else if (enemy.ai.suspensePauseTimer > 0 && enemy.state === 'SEARCH') {
         // Terrifying stalker/lurker suspenseful freeze: locks gaze toward sound before hunting
         desiredSpeed = 0;
@@ -4983,7 +6804,49 @@ export class FirstPersonGameEngine {
         while (diff < -Math.PI) diff += Math.PI * 2;
         enemy.yaw += diff * Math.min(1, simDt * profile.turnRate);
 
-        if (enemy.type === 'titanforged') {
+        if (enemy.type === 'the_former') {
+          const slot = enemy.activeWeaponSlot ?? 0;
+          const mag = slot === 0 ? (enemy.weaponMagAmmo ?? 0) : (enemy.secondaryMagAmmo ?? 0);
+          const res = slot === 0 ? (enemy.weaponReserveAmmo ?? 0) : (enemy.secondaryReserveAmmo ?? 0);
+          const hasAnyAmmo = mag > 0 || res > 0;
+          const reloading = (enemy.formerReloadTimer ?? 0) > 0;
+
+          if (!hasAnyAmmo && slot === 0 && ((enemy.secondaryMagAmmo ?? 0) > 0 || (enemy.secondaryReserveAmmo ?? 0) > 0)) {
+            enemy.activeWeaponSlot = 1;
+            if (enemy.refs.formerRig) {
+              enemy.refs.formerRig.activeWeaponSlot = 1;
+              enemy.refs.formerRig.primaryWeaponGroup.visible = false;
+              enemy.refs.formerRig.secondaryWeaponGroup.visible = true;
+            }
+          } else if (mag <= 0 && res > 0 && !reloading) {
+            enemy.formerReloadTimer = 1.65;
+            this.audio.playFormerCorruptedReload(distToCam, pan, occludedWalls, verticalDelta);
+          } else if (mag > 0 && !reloading && distToTarget > 2.4 && losVisible && enemy.rangedCooldown <= 0) {
+            this.fireFormerWeaponShot(enemy, targetPos, distToCam, pan, occludedWalls, verticalDelta);
+            if (slot === 0) enemy.weaponMagAmmo = Math.max(0, (enemy.weaponMagAmmo ?? 1) - 1);
+            else enemy.secondaryMagAmmo = Math.max(0, (enemy.secondaryMagAmmo ?? 1) - 1);
+
+            const wId = (slot === 1 ? enemy.secondaryWeaponId : enemy.primaryWeaponId) ?? 'assault_rifle';
+            const isAuto = WEAPONS[wId]?.automatic ?? false;
+            enemy.formerBurstCount = (enemy.formerBurstCount ?? 0) + 1;
+            if (isAuto && enemy.formerBurstCount < 3) {
+              enemy.rangedCooldown = 0.16;
+            } else {
+              enemy.formerBurstCount = 0;
+              enemy.rangedCooldown = wId === 'sniper_rifle' ? 1.65 : wId === 'shotgun' ? 1.35 : 0.95;
+            }
+          }
+
+          if (distToTarget > (hasAnyAmmo ? 7.5 : 2.2) && enemy.anim.animState !== 'ATTACK') {
+            moveGoal = targetPos;
+            desiredSpeed = (hasAnyAmmo ? profile.walkSpeed : profile.runSpeed) * 0.92 * speedScale;
+          }
+          if (distToTarget <= 2.6 && enemy.attackCooldown <= 0 && enemy.anim.animState !== 'ATTACK') {
+            const kind = selectNextAttackKind('the_former', distToTarget, enemy.ai, { healthRatio, bossPhase: 1 });
+            triggerMonsterAttack(enemy.anim, kind, profile.weightClass);
+            enemy.attackCooldown = enemy.anim.attackDuration + 0.55;
+          }
+        } else if (enemy.type === 'titanforged') {
           if (distToTarget > 6.0 && enemy.anim.animState !== 'ATTACK') {
             moveGoal = targetPos;
             desiredSpeed = profile.walkSpeed * 0.95 * speedScale;
@@ -5281,6 +7144,40 @@ export class FirstPersonGameEngine {
       const entityTurnRate = yawDelta / Math.max(simDt, 0.001);
       enemy.prevYaw = enemy.yaw;
 
+      // THE FORMER clears obstructing non-Former infected creatures blocking its path
+      if (
+        enemy.type === 'the_former' &&
+        enemy.hesitationState !== 'hesitating' &&
+        enemy.attackCooldown <= 0 &&
+        (enemy.state === 'CHASE' || enemy.state === 'ATTACK')
+      ) {
+        for (const other of this.enemies) {
+          if (
+            other === enemy ||
+            other.type === 'the_former' ||
+            !other.active ||
+            other.state === 'DEAD' ||
+            other.huskCollapsed
+          ) {
+            continue;
+          }
+          if (
+            Math.abs(other.position.y - enemy.position.y) < 1.6 &&
+            other.position.distanceTo(enemy.position) < 1.85
+          ) {
+            triggerMonsterAttack(enemy.anim, 'claw', profile.weightClass);
+            enemy.attackCooldown = enemy.anim.attackDuration + 0.35;
+            this.damageEnemy(
+              other,
+              16,
+              'body',
+              other.position.clone().add(new THREE.Vector3(0, 1.0, 0))
+            );
+            break;
+          }
+        }
+      }
+
       updateMonsterAnimations(enemy.refs, enemy.anim, {
         dt: simDt,
         time: this.elapsedSeconds,
@@ -5303,12 +7200,33 @@ export class FirstPersonGameEngine {
         escalatorSpeed: enemy.escalatorSpeed,
         verticalVel: enemy.vy,
         grounded: enemy.grounded,
+        isHesitating: enemy.type === 'the_former' && enemy.hesitationState === 'hesitating',
+        hesitationProgress:
+          enemy.type === 'the_former' && enemy.hesitationState === 'hesitating'
+            ? 1 - (enemy.hesitationTimer ?? 0) / Math.max(0.1, enemy.hesitationDuration ?? 2.45)
+            : 0,
+        formerWeaponRecoil: enemy.formerWeaponRecoil ?? 0,
+        formerReloading: (enemy.formerReloadTimer ?? 0) > 0,
+        formerActiveSlot: enemy.activeWeaponSlot ?? 0,
+        formerIlluminated:
+          enemy.type === 'the_former' ? this.isPositionIlluminatedByFlashlight(enemy.position) : false,
         onFootstep: (weight, speedRatio) => {
-          const surf = enemy.onEscalator || enemy.onStairs ? 'metal' : this.getSurfaceAt(enemy.position.x, enemy.position.z);
-          this.audio.playSurfaceFootstep(surf, weight, speedRatio, distToCam, pan, occludedWalls, verticalDelta);
-          if ((weight === 'boss' || weight === 'large') && distToCam < 24) {
-            const shakeAmt = (weight === 'boss' ? 0.016 : 0.007) * (1 - distToCam / 26);
-            this.shakeIntensity = Math.max(this.shakeIntensity, shakeAmt);
+          if (enemy.type === 'the_former') {
+            this.formerLimpingStepFlag = !this.formerLimpingStepFlag;
+            this.audio.playFormerLimpingFootstep(
+              this.formerLimpingStepFlag,
+              distToCam,
+              pan,
+              occludedWalls,
+              verticalDelta
+            );
+          } else {
+            const surf = enemy.onEscalator || enemy.onStairs ? 'metal' : this.getSurfaceAt(enemy.position.x, enemy.position.z);
+            this.audio.playSurfaceFootstep(surf, weight, speedRatio, distToCam, pan, occludedWalls, verticalDelta);
+            if ((weight === 'boss' || weight === 'large') && distToCam < 24) {
+              const shakeAmt = (weight === 'boss' ? 0.016 : 0.007) * (1 - distToCam / 26);
+              this.shakeIntensity = Math.max(this.shakeIntensity, shakeAmt);
+            }
           }
         },
         onAttackWindup: (kind) => {
@@ -5329,7 +7247,7 @@ export class FirstPersonGameEngine {
           while (angDiff < -Math.PI) angDiff += Math.PI * 2;
 
           if (!this.droneMesh && curDist <= enemy.attackRange + reachBonus && Math.abs(angDiff) < 1.35) {
-            this.damagePlayer(Math.round(enemy.damage * dmgMult));
+            this.damagePlayer(Math.round(enemy.damage * dmgMult), enemy.position);
             this.audio.playAttackImpactSound(kind, distToCam, pan);
             if (kind === 'heavy_slam' || kind === 'charge' || kind === 'tentacle_sweep') {
               this.shakeIntensity = Math.max(this.shakeIntensity, 0.042);
@@ -5355,7 +7273,7 @@ export class FirstPersonGameEngine {
               }
             }
             if (!this.droneMesh && dP < 4.5) {
-              this.damagePlayer(Math.round(enemy.damage * 1.35));
+              this.damagePlayer(Math.round(enemy.damage * 1.35), worldPos);
               this.knockbackVel.addScaledVector(awayDir, 10.5);
             }
           } else if (event === 'crusher_impact') {
@@ -5373,7 +7291,7 @@ export class FirstPersonGameEngine {
               }
             }
             if (!this.droneMesh && strikeCenter.distanceTo(this.playerPos) < 5.6) {
-              this.damagePlayer(Math.round(enemy.damage * 1.45));
+              this.damagePlayer(Math.round(enemy.damage * 1.45), strikeCenter);
               this.knockbackVel.addScaledVector(awayDir, 12.0);
               this.playerVel.y = Math.max(this.playerVel.y, 4.2);
             }
@@ -5388,7 +7306,7 @@ export class FirstPersonGameEngine {
             this.spawnImpactParticles(worldPos.clone().add(new THREE.Vector3(0, 3.8, 0)), 0xc026d3, 22);
             if (!this.droneMesh && dP < 20.0) {
               const force = THREE.MathUtils.clamp(1 - dP / 20.0, 0.25, 1.0);
-              this.damagePlayer(Math.round(enemy.damage * (0.65 + force * 0.65)));
+              this.damagePlayer(Math.round(enemy.damage * (0.65 + force * 0.65)), worldPos);
               this.knockbackVel.addScaledVector(awayDir, 15.0 * force);
               this.playerVel.y = Math.max(this.playerVel.y, 5.2 * force);
             }
@@ -5406,7 +7324,7 @@ export class FirstPersonGameEngine {
             const reach = kind === 'tentacle_grab' ? 9.5 : 4.8;
             if (!this.droneMesh && dP <= reach) {
               this.audio.playGrabImpact(kind === 'tentacle_grab', dP, pan);
-              this.damagePlayer(Math.round(enemy.damage * 0.85));
+              this.damagePlayer(Math.round(enemy.damage * 0.85), worldPos);
               this.playerVel.y = Math.max(this.playerVel.y, 4.8);
               this.knockbackVel.addScaledVector(awayDir, 3.5);
             }
@@ -5414,7 +7332,7 @@ export class FirstPersonGameEngine {
             const reach = kind === 'tentacle_grab' ? 10.5 : 5.4;
             if (!this.droneMesh && dP <= reach) {
               this.audio.playGrabImpact(true, dP, pan);
-              this.damagePlayer(Math.round(enemy.damage * 0.75));
+              this.damagePlayer(Math.round(enemy.damage * 0.75), worldPos);
               this.knockbackVel.addScaledVector(awayDir, kind === 'tentacle_grab' ? 16.0 : 13.5);
               this.playerVel.y = Math.max(this.playerVel.y, 5.8);
               this.shakeIntensity = Math.max(this.shakeIntensity, 0.052);
@@ -5432,14 +7350,14 @@ export class FirstPersonGameEngine {
             this.audio.playAttackImpactSound('heavy_slam', dP, pan);
             this.spawnImpactParticles(worldPos.clone().add(new THREE.Vector3(0, 0.4, 0)), 0xef4444, 14);
             if (!this.droneMesh && dP < 3.8) {
-              this.damagePlayer(Math.round(enemy.damage * 1.32));
+              this.damagePlayer(Math.round(enemy.damage * 1.32), worldPos);
               this.knockbackVel.addScaledVector(awayDir, 9.0);
               this.shakeIntensity = Math.max(this.shakeIntensity, 0.044);
             }
           } else if (event === 'hollow_frenzy_slash') {
             this.audio.playHollowClawScrape(dP, pan);
             if (!this.droneMesh && dP < 4.2) {
-              this.damagePlayer(Math.round(enemy.damage * 0.62));
+              this.damagePlayer(Math.round(enemy.damage * 0.62), worldPos);
               this.audio.playAttackImpactSound('claw_strike', dP, pan);
               this.shakeIntensity = Math.max(this.shakeIntensity, 0.028);
             }
@@ -5469,7 +7387,7 @@ export class FirstPersonGameEngine {
           onStrikeHit: (_kind, headWorldPos, range) => {
             if (enemy.state === 'DEAD' || enemy.health <= 0) return;
             if (!this.droneMesh && headWorldPos.distanceTo(this.playerPos) <= range) {
-              this.damagePlayer(enemy.damage * 1.15);
+              this.damagePlayer(enemy.damage * 1.15, headWorldPos);
               this.shakeIntensity = Math.max(this.shakeIntensity, 0.045);
               this.audio.playEnemyRoar(4, true, 0);
             }
@@ -5522,7 +7440,7 @@ export class FirstPersonGameEngine {
         onTentacleAttackHit: (tipPos) => {
           if (enemy.state === 'DEAD' || enemy.health <= 0) return;
           if (!this.droneMesh && tipPos.distanceTo(this.playerPos) < 2.8) {
-            this.damagePlayer(Math.round(enemy.damage * 0.65));
+            this.damagePlayer(Math.round(enemy.damage * 0.65), tipPos);
             this.audio.playTentacleImpact(isHeavyTentacle, false, distToCam, pan, occludedWalls);
           }
         },
@@ -5591,7 +7509,7 @@ export class FirstPersonGameEngine {
           const hitDist = p.mesh.position.distanceTo(this.camera.position);
           const midDist = _vec3A.lerp(p.mesh.position, 0.5).distanceTo(this.camera.position);
           if (Math.min(hitDist, midDist) < 0.85) {
-            this.damagePlayer(p.damage);
+            this.damagePlayer(p.damage, p.mesh.position);
             remove = true;
           }
         }
@@ -5716,6 +7634,86 @@ export class FirstPersonGameEngine {
           }
         }
       }
+    }
+
+    if (this.turretRefs) {
+      this.turretRemaining = Math.max(0, this.turretRemaining - dt);
+      this.turretFireCooldown = Math.max(0, this.turretFireCooldown - dt);
+      if (this.turretFlashTimer > 0) {
+        this.turretFlashTimer -= dt;
+        this.turretRefs.muzzleFlash.visible = this.turretFlashTimer > 0;
+      }
+
+      // Target nearest living active enemy within 19m
+      let nearestEnemy: EnemyEntity | null = null;
+      let nearestSq = 19 * 19;
+      for (const enemy of this.enemies) {
+        if (!enemy.active || enemy.state === 'DEAD' || enemy.huskCollapsed) continue;
+        const dSq = enemy.position.distanceToSquared(this.turretPos);
+        if (dSq < nearestSq) {
+          nearestSq = dSq;
+          nearestEnemy = enemy;
+        }
+      }
+
+      if (nearestEnemy) {
+        const dx = nearestEnemy.position.x - this.turretPos.x;
+        const dz = nearestEnemy.position.z - this.turretPos.z;
+        const aimYaw = Math.atan2(dx, dz);
+        let diff = aimYaw - this.turretRefs.headPivot.rotation.y;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        this.turretRefs.headPivot.rotation.y += diff * Math.min(1, dt * 10);
+
+        if (this.turretFireCooldown <= 0 && Math.abs(diff) < 0.32) {
+          this.turretFireCooldown = 0.28;
+          this.turretFlashTimer = 0.05;
+          this.turretRefs.muzzleFlash.visible = true;
+          const muzzlePos = this.turretPos.clone().add(new THREE.Vector3(0, 0.78, 0));
+          const hitPt = nearestEnemy.position.clone().add(new THREE.Vector3(0, nearestEnemy.isBoss ? 2.4 : 1.25, 0));
+          this.spawnTracerBeam(muzzlePos, hitPt, 0xfb923c);
+          this.audio.playTurretShot();
+          this.damageEnemy(nearestEnemy, 20, 'body', hitPt);
+        }
+      } else {
+        this.turretRefs.headPivot.rotation.y += dt * 0.85;
+      }
+
+      if (this.turretRemaining <= 0) {
+        this.scene.remove(this.turretRefs.root);
+        this.disposeObject3D(this.turretRefs.root);
+        this.turretRefs = null;
+      }
+    }
+
+    if (this.healingBeaconMesh) {
+      this.healingBeaconTimer = Math.max(0, this.healingBeaconTimer - dt);
+      this.healingBeaconMesh.rotation.y += dt * 1.4;
+      if (this.playerPos.distanceTo(this.healingBeaconPos) <= 4.6) {
+        this.health = Math.min(this.maxHealth, this.health + 6.5 * dt);
+        this.bodyCondition.head = Math.min(100, this.bodyCondition.head + 6 * dt);
+        this.bodyCondition.torso = Math.min(100, this.bodyCondition.torso + 6 * dt);
+        this.bodyCondition.arms = Math.min(100, this.bodyCondition.arms + 6 * dt);
+        this.bodyCondition.legs = Math.min(100, this.bodyCondition.legs + 6 * dt);
+      }
+      if (this.healingBeaconTimer <= 0) {
+        this.scene.remove(this.healingBeaconMesh);
+        this.disposeObject3D(this.healingBeaconMesh);
+        this.healingBeaconMesh = null;
+      }
+    }
+
+    // Dr. Zero scripted radio intercept milestones
+    if (
+      !this.drZeroSentMilestones.has(1) &&
+      this.elapsedSeconds > 52 &&
+      this.missionId !== 'mission_01' &&
+      !this.radioBanner
+    ) {
+      this.drZeroSentMilestones.add(1);
+      const line = STORY_NPC_LINES.dr_zero[0];
+      this.showRadio(line.speaker, line.text);
+      this.audio.playVoiceCadence(line.pitchHz, line.timbre, 5);
     }
 
     if (this.pulseRingMesh) {
@@ -6047,11 +8045,14 @@ export class FirstPersonGameEngine {
       isReloading: this.isReloading,
       reloadProgress: this.isReloading ? 1 - this.reloadTimer / this.reloadDuration : 0,
       isAiming: this.mouseDownRight,
-      isCrouching: Boolean(
-        this.keys['ControlLeft'] || this.keys['ControlRight'] || this.keys['KeyC'] || this.touchCrouch
-      ),
+      isCrouching:
+        !this.isCrawling &&
+        Boolean(this.keys['ControlLeft'] || this.keys['ControlRight'] || this.keys['KeyC'] || this.touchCrouch),
+      isCrawling: this.isCrawling,
+      isVaulting: this.vaultTimer > 0,
       isSprinting:
         Boolean(this.keys['ShiftLeft'] || this.keys['ShiftRight'] || this.touchSprint) &&
+        !this.isCrawling &&
         this.stamina > 5,
       abilityActive: this.abilityActive,
       abilityActiveRemaining: this.abilityActiveRemaining,
@@ -6073,6 +8074,7 @@ export class FirstPersonGameEngine {
       interactEducationId: closest?.educationId ?? null,
       monstersFrozen: this.educationFrozen,
       radioBanner: this.radioBanner,
+      operativeQuip: this.operativeQuip,
       missionBanner: this.missionBanner,
       chapterIntro: this.chapterIntro,
       secretToast: this.secretToast,
@@ -6081,6 +8083,11 @@ export class FirstPersonGameEngine {
       isSniperAds,
       moveSpread: Math.min(1, horizSpeed / 7.5 + this.recoilOffset * 4),
       damageFlash: this.damageFlash,
+      hurtDirectionDeg: this.hurtDirectionDeg,
+      knockdownTimer: Number(this.knockdownTimer.toFixed(2)),
+      playerWear: Number(this.playerWear.toFixed(2)),
+      turretActive: Boolean(this.turretRefs),
+      turretRemaining: Number(this.turretRemaining.toFixed(1)),
       pointerLocked: this.pointerLocked,
       checkpointSavedTimer: this.checkpointSavedTimer,
       boss: activeBossEntity
@@ -6138,13 +8145,23 @@ export class FirstPersonGameEngine {
           4;
         return Math.max(0, Math.min(100, Math.round(armorRatio * 40 + avgBody * 0.6)));
       })(),
-      bodyCondition: { ...this.bodyCondition },
+      bodyCondition: {
+        head: Math.round(this.bodyCondition.head),
+        torso: Math.round(this.bodyCondition.torso),
+        arms: Math.round(this.bodyCondition.arms),
+        legs: Math.round(this.bodyCondition.legs),
+      },
       radiationLevel: Number(this.radiationLevel.toFixed(3)),
       radiationMsv: Number(this.radiationMsv.toFixed(2)),
       radiationCpm: Math.round(this.radiationCpm),
       radiationSourceLabel: this.radiationSourceLabel,
       lastGeigerClickAt: this.lastGeigerClickAt,
       geigerMuted: this.geigerMuted,
+      formerAlert: this.formerAlert,
+      armourPieces: buildArmourHudSnapshot(this.armourState),
+      armourBanner: this.armourBanner,
+      bodyArmourLost: this.bodyArmourLost,
+      thirdPersonView: this.thirdPersonView,
     });
   }
 
@@ -6244,6 +8261,9 @@ export class FirstPersonGameEngine {
     }
 
     // Extreme radiation exposure causes gradual suit/HP chip hazard
+    if (this.radiationLevel >= 0.62) {
+      this.triggerQuip('hazard', 26);
+    }
     if (this.radiationLevel >= 0.84) {
       this.radiationBurnTimer += dt;
       if (this.radiationBurnTimer >= 1.9) {
@@ -6361,6 +8381,7 @@ export class FirstPersonGameEngine {
       if (!prevDetected && this.proximityAlertTimer <= 0) {
         this.audio.playProximityThreatAlert(targetProximity, criticalCount);
         this.proximityAlertTimer = Math.max(0.58, 1.35 - targetProximity * 0.72);
+        this.triggerQuip('threat_close', 20);
         this.pushHud(true);
       } else if (this.proximityAlertTimer <= 0) {
         this.audio.playProximityThreatAlert(this.proximityThreatIntensity, criticalCount);
@@ -6428,6 +8449,14 @@ export class FirstPersonGameEngine {
         this.radioBannerTimer -= dt;
         if (this.radioBannerTimer <= 0) this.radioBanner = null;
       }
+      if (this.operativeQuipTimer > 0) {
+        this.operativeQuipTimer -= dt;
+        if (this.operativeQuipTimer <= 0) this.operativeQuip = null;
+      }
+      if (this.killStreakTimer > 0) {
+        this.killStreakTimer = Math.max(0, this.killStreakTimer - dt);
+        if (this.killStreakTimer <= 0) this.killStreakCount = 0;
+      }
       if (this.missionBanner) {
         this.missionBanner.timer -= dt;
         if (this.missionBanner.timer <= 0) this.missionBanner = null;
@@ -6439,6 +8468,14 @@ export class FirstPersonGameEngine {
       if (this.secretToast) {
         this.secretToast.timer -= dt;
         if (this.secretToast.timer <= 0) this.secretToast = null;
+      }
+      if (this.formerAlert) {
+        this.formerAlert.timer -= dt;
+        if (this.formerAlert.timer <= 0) this.formerAlert = null;
+      }
+      if (this.armourBanner) {
+        this.armourBanner.timer -= dt;
+        if (this.armourBanner.timer <= 0) this.armourBanner = null;
       }
       if (this.hitMarkerTimer > 0) this.hitMarkerTimer = Math.max(0, this.hitMarkerTimer - dt);
       if (this.damageFlash > 0) this.damageFlash = Math.max(0, this.damageFlash - dt * 1.4);
@@ -6566,11 +8603,45 @@ export class FirstPersonGameEngine {
           }
         }
       } else if (this.isDead) {
-        this.deathAnimTimer = Math.min(1, this.deathAnimTimer + dt * 2.2);
-        this.camera.position.y = THREE.MathUtils.lerp(1.5, 0.35, this.deathAnimTimer);
-        this.camera.rotation.z = THREE.MathUtils.lerp(0, 0.65, this.deathAnimTimer);
+        this.deathAnimTimer = Math.min(1, this.deathAnimTimer + dt * 1.75);
+        const startEye = this.playerPos.y + this.currentEyeHeight;
+        const endGround = this.groundHeightAt(this.playerPos.x, this.playerPos.z, this.playerPos.y) + 0.28;
+        this.camera.position.y = THREE.MathUtils.lerp(startEye, endGround, this.deathAnimTimer);
+        this.camera.rotation.z = THREE.MathUtils.lerp(this.hurtRoll, 0.78, this.deathAnimTimer);
+        this.camera.rotation.x = THREE.MathUtils.lerp(this.playerPitch, -0.32, this.deathAnimTimer);
       }
 
+      this.updateFormerCorpses(dt);
+      this.updateRemotePlayers(dt);
+      if (this.armourFragments.length > 0) {
+        updateArmourFragments(this.scene, this.armourFragments, dt, {
+          groundHeightAt: (x, z, curY, maxStep) => this.groundHeightAt(x, z, curY, maxStep),
+          resolveHorizontalCollision: (x, z, y, r, h) => {
+            const res = this.resolveHorizontalCollision(x, z, y, r, h);
+            return {
+              x: res.x,
+              z: res.z,
+              hit: Math.abs(res.x - x) > 0.0005 || Math.abs(res.z - z) > 0.0005,
+            };
+          },
+          onSurfaceImpact: (pos, speed) => {
+            const d = pos.distanceTo(this.playerPos);
+            if (d < 22) {
+              const pan = THREE.MathUtils.clamp(
+                ((pos.x - this.playerPos.x) * Math.cos(this.playerYaw) -
+                  (pos.z - this.playerPos.z) * Math.sin(this.playerYaw)) /
+                  Math.max(1, d),
+                -1,
+                1
+              );
+              this.audio.playArmorFragmentClink(speed, d, pan);
+            }
+            if (speed > 2.6) {
+              this.spawnImpactParticles(pos, 0xfbbf24, 2);
+            }
+          },
+        });
+      }
       this.updateEnemies(dt);
       if (!(this.educationFrozen && !this.isCoopSession)) {
         this.updateProjectilesAndParticles(dt);
@@ -6763,6 +8834,7 @@ export class FirstPersonGameEngine {
   public dispose(): void {
     this.disposed = true;
     this.monsterNetSync.dispose();
+    this.playerNetSync.dispose();
     cancelAnimationFrame(this.frameId);
     window.clearTimeout(this.frameId);
 
@@ -6792,6 +8864,40 @@ export class FirstPersonGameEngine {
     this.beaconGeoBeam?.dispose();
     this.beaconGeoRing?.dispose();
     this.beaconGeoMarker?.dispose();
+
+    disposeArmourFragments(this.scene, this.armourFragments);
+    if (this.playerBodyRig) {
+      this.scene.remove(this.playerBodyRig);
+      this.disposeObject3D(this.playerBodyRig);
+      this.playerBodyRig = null;
+    }
+    for (const rp of this.remotePlayers.values()) {
+      this.scene.remove(rp.group);
+      this.disposeObject3D(rp.group);
+    }
+    this.remotePlayers.clear();
+
+    if (this.turretRefs) {
+      this.scene.remove(this.turretRefs.root);
+      this.disposeObject3D(this.turretRefs.root);
+      this.turretRefs = null;
+    }
+    if (this.healingBeaconMesh) {
+      this.scene.remove(this.healingBeaconMesh);
+      this.disposeObject3D(this.healingBeaconMesh);
+      this.healingBeaconMesh = null;
+    }
+    for (const grp of this.storyNpcGroups) {
+      this.scene.remove(grp);
+      this.disposeObject3D(grp);
+    }
+    this.storyNpcGroups = [];
+
+    for (const fc of this.formerCorpses) {
+      this.scene.remove(fc.refs.group);
+      this.disposeObject3D(fc.refs.group);
+    }
+    this.formerCorpses = [];
 
     for (const bp of this.bloodPools) {
       this.scene.remove(bp.mesh);

@@ -26,7 +26,8 @@ export function normalizeCharacterId(id?: string | null): CharacterId {
     id === 'raven' ||
     id === 'brute' ||
     id === 'nyx' ||
-    id === 'zero'
+    id === 'zero' ||
+    id === 'god'
   ) {
     return id;
   }
@@ -470,6 +471,45 @@ export const CHARACTERS: Record<CharacterId, CharacterDef> = {
     trimColor: '#991b1b',
     visorColor: '#fb7185',
   },
+  god: {
+    id: 'god',
+    callsign: 'GOD',
+    classification: 'DEVELOPER & SYSTEM ADMIN',
+    role: 'System Administrator',
+    bio: 'Omnipotent quarantine system authority possessing unconstrained administrative privileges, unlimited thermal shielding, noclip flight, and the Vaporiser disintegration rail.',
+    backstory: 'System administrator entity created to oversee all simulation sectors, purge infected anomalies instantly, and manipulate quarantine parameters at will.',
+    appearanceSummary: 'Golden radiant tactical command chassis, crystalline neural visor, infinite energy matrix, admin designation crest.',
+    primaryWeapon: 'vaporiser',
+    equipmentList: [
+      'Omni Vaporiser 3062 Disintegration Rail',
+      'Admin Spawn Matrix Deck',
+      'Infinite Shield Generator',
+      'Noclip Flight Array',
+    ],
+    stats: {
+      health: 9999,
+      speed: 130,
+      armor: 9999,
+      damage: 9999,
+      specialtyLabel: 'Omnipotence',
+      specialtyValue: 100,
+    },
+    ability: {
+      name: 'ADMIN SUPREMACY',
+      description: 'Instantly vaporises all hostiles in the sector, restores full health/armor, and completes active objectives.',
+      duration: 10,
+      cooldown: 1,
+      accentColor: '#fbbf24',
+    },
+    voiceProfile: { pitchHz: 120, timbre: 'synthetic', personalityTag: 'System Administrator' },
+    damageMult: 5.0,
+    critMult: 3.0,
+    damageResist: 0.99,
+    isPrimaryRoster: true,
+    armorColor: '#09090b',
+    trimColor: '#eab308',
+    visorColor: '#fef08a',
+  },
 };
 
 export const CHARACTER_LIST: CharacterDef[] = [
@@ -484,6 +524,7 @@ export const CHARACTER_LIST: CharacterDef[] = [
   CHARACTERS.brute,
   CHARACTERS.nyx,
   CHARACTERS.zero,
+  CHARACTERS.god,
 ];
 
 export const STORY_CHARACTERS: StoryCharacterDef[] = [
@@ -689,6 +730,25 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     unlockCost: 8,
     description: 'Blacksite orbital capacitor lance capable of punching through boss armor plates.',
   },
+  vaporiser: {
+    id: 'vaporiser',
+    name: 'OMNI VAPORISER 3062',
+    category: 'Admin Disintegration Weapon',
+    damage: 99999,
+    fireRate: 8.0,
+    magSize: 999,
+    reserveMax: 9999,
+    reloadTime: 0.5,
+    spread: 0.0,
+    adsSpread: 0.0,
+    recoilKick: 0.0,
+    range: 350,
+    automatic: true,
+    adsFov: 46,
+    muzzleColor: '#fbbf24',
+    isEnergy: true,
+    description: 'Admin-tier quantum disintegration beam. Insta-kills any enemy, instantly finishes generators/puzzles, and vaporises obstacles.',
+  },
 };
 
 export const SECONDARY_WEAPON_IDS: WeaponId[] = ['pistol', 'shotgun', 'plasma_lance'];
@@ -703,6 +763,7 @@ export function createDefaultUpgrades(): Record<WeaponId, WeaponUpgradeState> {
     pistol: { damageLevel: 0, capacityLevel: 0, handlingLevel: 0 },
     shotgun: { damageLevel: 0, capacityLevel: 0, handlingLevel: 0 },
     plasma_lance: { damageLevel: 0, capacityLevel: 0, handlingLevel: 0 },
+    vaporiser: { damageLevel: 0, capacityLevel: 0, handlingLevel: 0 },
   };
 }
 

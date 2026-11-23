@@ -264,6 +264,19 @@ export const MobileTouchControls: React.FC<Props> = ({
 
           <button
             type="button"
+            onClick={() => onTouchAction('crawl')}
+            className={`w-12 h-11 border text-[10px] font-mono-tech flex flex-col items-center justify-center touch-manipulation ${
+              hud.isCrawling
+                ? 'bg-purple-950/80 border-purple-400 text-purple-200'
+                : 'bg-black/55 border-zinc-600/80 text-zinc-200'
+            }`}
+          >
+            <Shield className="w-3 h-3" />
+            <span>{hud.isCrawling ? 'PRONE' : 'CRAWL'}</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => onTouchAction('jump')}
             className="w-12 h-11 bg-black/55 active:bg-zinc-700 border border-zinc-600/80 text-[10px] font-mono-tech text-zinc-100 flex flex-col items-center justify-center touch-manipulation"
           >
